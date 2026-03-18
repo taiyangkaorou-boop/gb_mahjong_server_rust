@@ -1,0 +1,348 @@
+syntax = "proto3";
+
+package gb_mahjong.engine.v1;
+
+option java_multiple_files = true;
+option java_package = "com.gbmahjong.engine.v1";
+option csharp_namespace = "GbMahjong.Engine.V1";
+
+service RuleEngineService {
+  rpc ValidateAction(ValidateActionRequest) returns (ValidateActionResponse);
+  rpc CalculateScore(CalculateScoreRequest) returns (CalculateScoreResponse);
+}
+
+enum Seat {
+  SEAT_UNSPECIFIED = 0;
+  SEAT_EAST = 1;
+  SEAT_SOUTH = 2;
+  SEAT_WEST = 3;
+  SEAT_NORTH = 4;
+}
+
+enum Tile {
+  TILE_UNSPECIFIED = 0;
+  TILE_UNKNOWN = 1;
+
+  TILE_CHARACTER_1 = 2;
+  TILE_CHARACTER_2 = 3;
+  TILE_CHARACTER_3 = 4;
+  TILE_CHARACTER_4 = 5;
+  TILE_CHARACTER_5 = 6;
+  TILE_CHARACTER_6 = 7;
+  TILE_CHARACTER_7 = 8;
+  TILE_CHARACTER_8 = 9;
+  TILE_CHARACTER_9 = 10;
+
+  TILE_BAMBOO_1 = 11;
+  TILE_BAMBOO_2 = 12;
+  TILE_BAMBOO_3 = 13;
+  TILE_BAMBOO_4 = 14;
+  TILE_BAMBOO_5 = 15;
+  TILE_BAMBOO_6 = 16;
+  TILE_BAMBOO_7 = 17;
+  TILE_BAMBOO_8 = 18;
+  TILE_BAMBOO_9 = 19;
+
+  TILE_DOT_1 = 20;
+  TILE_DOT_2 = 21;
+  TILE_DOT_3 = 22;
+  TILE_DOT_4 = 23;
+  TILE_DOT_5 = 24;
+  TILE_DOT_6 = 25;
+  TILE_DOT_7 = 26;
+  TILE_DOT_8 = 27;
+  TILE_DOT_9 = 28;
+
+  TILE_EAST_WIND = 29;
+  TILE_SOUTH_WIND = 30;
+  TILE_WEST_WIND = 31;
+  TILE_NORTH_WIND = 32;
+
+  TILE_RED_DRAGON = 33;
+  TILE_GREEN_DRAGON = 34;
+  TILE_WHITE_DRAGON = 35;
+
+  TILE_FLOWER_PLUM = 36;
+  TILE_FLOWER_ORCHID = 37;
+  TILE_FLOWER_BAMBOO = 38;
+  TILE_FLOWER_CHRYSANTHEMUM = 39;
+
+  TILE_SEASON_SPRING = 40;
+  TILE_SEASON_SUMMER = 41;
+  TILE_SEASON_AUTUMN = 42;
+  TILE_SEASON_WINTER = 43;
+}
+
+enum ActionKind {
+  ACTION_KIND_UNSPECIFIED = 0;
+  ACTION_KIND_DRAW = 1;
+  ACTION_KIND_DISCARD = 2;
+  ACTION_KIND_CHI = 3;
+  ACTION_KIND_PENG = 4;
+  ACTION_KIND_EXPOSED_KONG = 5;
+  ACTION_KIND_CONCEALED_KONG = 6;
+  ACTION_KIND_SUPPLEMENTAL_KONG = 7;
+  ACTION_KIND_DECLARE_WIN = 8;
+  ACTION_KIND_PASS = 9;
+  ACTION_KIND_REPLACE_FLOWER = 10;
+}
+
+enum ClaimKind {
+  CLAIM_KIND_UNSPECIFIED = 0;
+  CLAIM_KIND_CHI = 1;
+  CLAIM_KIND_PENG = 2;
+  CLAIM_KIND_EXPOSED_KONG = 3;
+  CLAIM_KIND_DISCARD_WIN = 4;
+  CLAIM_KIND_ROB_KONG_WIN = 5;
+}
+
+enum WinType {
+  WIN_TYPE_UNSPECIFIED = 0;
+  WIN_TYPE_SELF_DRAW = 1;
+  WIN_TYPE_DISCARD = 2;
+  WIN_TYPE_ROB_KONG = 3;
+  WIN_TYPE_KONG_DRAW = 4;
+}
+
+enum MeldKind {
+  MELD_KIND_UNSPECIFIED = 0;
+  MELD_KIND_CHI = 1;
+  MELD_KIND_PENG = 2;
+  MELD_KIND_EXPOSED_KONG = 3;
+  MELD_KIND_CONCEALED_KONG = 4;
+  MELD_KIND_SUPPLEMENTAL_KONG = 5;
+}
+
+enum ValidationRejectCode {
+  VALIDATION_REJECT_CODE_UNSPECIFIED = 0;
+  VALIDATION_REJECT_CODE_INVALID_CONTEXT = 1;
+  VALIDATION_REJECT_CODE_TILE_NOT_OWNED = 2;
+  VALIDATION_REJECT_CODE_TILE_NOT_AVAILABLE = 3;
+  VALIDATION_REJECT_CODE_MELD_NOT_FORMABLE = 4;
+  VALIDATION_REJECT_CODE_HAND_NOT_COMPLETE = 5;
+  VALIDATION_REJECT_CODE_RULESET_VIOLATION = 6;
+  VALIDATION_REJECT_CODE_ACTION_WINDOW_MISMATCH = 7;
+  VALIDATION_REJECT_CODE_INTERNAL_ERROR = 8;
+}
+
+enum SettlementFlag {
+  SETTLEMENT_FLAG_UNSPECIFIED = 0;
+  SETTLEMENT_FLAG_SELF_DRAW = 1;
+  SETTLEMENT_FLAG_DISCARD_WIN = 2;
+  SETTLEMENT_FLAG_ROB_KONG_WIN = 3;
+  SETTLEMENT_FLAG_KONG_DRAW_WIN = 4;
+  SETTLEMENT_FLAG_LAST_TILE_DRAW = 5;
+  SETTLEMENT_FLAG_LAST_TILE_CLAIM = 6;
+  SETTLEMENT_FLAG_DRAW_GAME = 7;
+}
+
+message RuleConfig {
+  string ruleset_id = 1;
+  uint32 seat_count = 2;
+  bool enable_flower_tiles = 3;
+  bool enable_robbing_kong = 4;
+  bool enable_kong_draw = 5;
+  bool enable_last_tile_bonus = 6;
+  uint32 base_points = 7;
+}
+
+message RoundContext {
+  Seat prevailing_wind = 1;
+  Seat dealer_seat = 2;
+  Seat current_turn_seat = 3;
+  uint32 hand_number = 4;
+  uint32 dealer_streak = 5;
+  uint32 wall_tiles_remaining = 6;
+  uint32 dead_wall_tiles_remaining = 7;
+  bool replacement_draw_pending = 8;
+  bool is_last_tile = 9;
+}
+
+message Meld {
+  MeldKind kind = 1;
+  repeated Tile tiles = 2;
+  Seat from_seat = 3;
+  Tile claimed_tile = 4;
+  bool concealed = 5;
+  uint64 source_event_seq = 6;
+}
+
+message DiscardTile {
+  Tile tile = 1;
+  uint32 turn_index = 2;
+  bool claimed = 3;
+  bool drawn_and_discarded = 4;
+  uint64 source_event_seq = 5;
+}
+
+message EnginePlayerState {
+  Seat seat = 1;
+  int64 current_score = 2;
+  uint32 concealed_tile_count = 3;
+  repeated Meld melds = 4;
+  repeated DiscardTile discards = 5;
+  repeated Tile flowers = 6;
+}
+
+message PrivateHandContext {
+  repeated Tile concealed_tiles = 1;
+  Tile drawn_tile = 2;
+}
+
+message RecentActionContext {
+  uint64 source_event_seq = 1;
+  Seat source_seat = 2;
+  ActionKind source_action_kind = 3;
+  Tile source_tile = 4;
+  bool replacement_draw = 5;
+  bool rob_kong_candidate = 6;
+}
+
+message ClaimWindowContext {
+  uint64 action_window_id = 1;
+  uint64 source_event_seq = 2;
+  Seat source_seat = 3;
+  Tile target_tile = 4;
+  ActionKind trigger_action_kind = 5;
+  repeated Seat eligible_seats = 6;
+}
+
+message DiscardAction {
+  Tile tile = 1;
+  bool tsumogiri = 2;
+}
+
+message ClaimAction {
+  ClaimKind claim_kind = 1;
+  Tile target_tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  uint64 source_event_seq = 5;
+}
+
+message DeclareWinAction {
+  WinType win_type = 1;
+  Tile winning_tile = 2;
+  Seat source_seat = 3;
+  uint64 source_event_seq = 4;
+}
+
+message PassAction {
+  uint64 source_event_seq = 1;
+}
+
+message KongAction {
+  ActionKind kong_kind = 1;
+  Tile tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  uint64 source_event_seq = 5;
+}
+
+message ReplaceFlowerAction {
+  repeated Tile flowers = 1;
+}
+
+message CandidateAction {
+  oneof action {
+    DiscardAction discard = 1;
+    ClaimAction claim = 2;
+    DeclareWinAction declare_win = 3;
+    PassAction pass = 4;
+    KongAction kong = 5;
+    ReplaceFlowerAction replace_flower = 6;
+  }
+}
+
+message ValidateActionRequest {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  uint64 server_event_seq = 4;
+  RuleConfig rule_config = 5;
+  RoundContext round_context = 6;
+  Seat actor_seat = 7;
+  CandidateAction candidate_action = 8;
+  RecentActionContext recent_action = 9;
+  repeated EnginePlayerState players = 10;
+  PrivateHandContext actor_private_hand = 11;
+  ClaimWindowContext claim_window = 12;
+}
+
+message MeldResult {
+  Meld meld = 1;
+  repeated Tile consumed_tiles = 2;
+  Tile target_tile = 3;
+}
+
+message FanDetail {
+  string fan_code = 1;
+  string fan_name = 2;
+  uint32 fan_value = 3;
+  uint32 count = 4;
+  string description = 5;
+}
+
+message WinningContext {
+  WinType win_type = 1;
+  Tile winning_tile = 2;
+  bool completes_standard_hand = 3;
+  bool completes_seven_pairs = 4;
+  bool completes_thirteen_orphans = 5;
+  repeated FanDetail tentative_fan_details = 6;
+  uint32 tentative_total_fan = 7;
+}
+
+message SuggestedFollowUp {
+  ActionKind action_kind = 1;
+  ClaimKind claim_kind = 2;
+  repeated Tile tiles = 3;
+}
+
+message ValidateActionResponse {
+  bool is_legal = 1;
+  ValidationRejectCode reject_code = 2;
+  ActionKind derived_action_type = 3;
+  MeldResult meld_result = 4;
+  WinningContext winning_context = 5;
+  repeated SuggestedFollowUp suggested_follow_ups = 6;
+  string explanation = 7;
+}
+
+message HandSnapshot {
+  Seat seat = 1;
+  repeated Tile concealed_tiles = 2;
+  repeated Meld melds = 3;
+  repeated Tile flowers = 4;
+  int64 current_score = 5;
+  bool winner = 6;
+  bool discarder = 7;
+}
+
+message CalculateScoreRequest {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  RuleConfig rule_config = 4;
+  RoundContext round_context = 5;
+  WinType win_type = 6;
+  Seat winner_seat = 7;
+  Seat discarder_seat = 8;
+  Tile winning_tile = 9;
+  repeated HandSnapshot hands = 10;
+  repeated SettlementFlag settlement_flags = 11;
+  RecentActionContext terminal_action = 12;
+}
+
+message SeatScoreDelta {
+  Seat seat = 1;
+  int64 delta = 2;
+  int64 final_total = 3;
+}
+
+message CalculateScoreResponse {
+  uint32 total_fan = 1;
+  repeated FanDetail fan_details = 2;
+  repeated SeatScoreDelta score_delta_by_seat = 3;
+  repeated SettlementFlag settlement_flags = 4;
+}

@@ -1,0 +1,16 @@
+/target/
+
+# C++/CMake build outputs
+/build/
+/cpp_engine/build/
+/cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/compile_commands.json
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+*.log
+*.swp
