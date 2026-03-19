@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package gb_mahjong.client.v1;
+
+import "client/common/enums.proto";
+import "client/common/types.proto";
+
+message RoundSettlement {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  Seat prevailing_wind = 4;
+  uint32 hand_number = 5;
+  Seat dealer_seat = 6;
+  WinType win_type = 7;
+  Seat winner_seat = 8;
+  Seat discarder_seat = 9;
+  Tile winning_tile = 10;
+  repeated RoundPlayerResult player_results = 11;
+  repeated FanDetail fan_details = 12;
+  repeated RevealedHand revealed_hands = 13;
+  repeated SettlementFlag settlement_flags = 14;
+  uint32 wall_tiles_remaining = 15;
+}
+
+message MatchSettlement {
+  string room_id = 1;
+  string match_id = 2;
+  repeated FinalStanding standings = 3;
+  uint64 finished_at_unix_ms = 4;
+}

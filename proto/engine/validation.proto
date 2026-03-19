@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package gb_mahjong.engine.v1;
+
+import "engine/common/enums.proto";
+import "engine/common/types.proto";
+
+message ValidateActionRequest {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  uint64 server_event_seq = 4;
+  RuleConfig rule_config = 5;
+  RoundContext round_context = 6;
+  Seat actor_seat = 7;
+  CandidateAction candidate_action = 8;
+  RecentActionContext recent_action = 9;
+  repeated EnginePlayerState players = 10;
+  PrivateHandContext actor_private_hand = 11;
+  ClaimWindowContext claim_window = 12;
+}
+
+message ValidateActionResponse {
+  bool is_legal = 1;
+  ValidationRejectCode reject_code = 2;
+  ActionKind derived_action_type = 3;
+  MeldResult meld_result = 4;
+  WinningContext winning_context = 5;
+  repeated SuggestedFollowUp suggested_follow_ups = 6;
+  string explanation = 7;
+}

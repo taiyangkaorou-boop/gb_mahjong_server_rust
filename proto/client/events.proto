@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package gb_mahjong.client.v1;
+
+import "client/actions.proto";
+import "client/common/enums.proto";
+import "client/common/types.proto";
+
+message ActionPrompt {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  uint64 event_seq = 4;
+  uint64 action_window_id = 5;
+  Seat actor_seat = 6;
+  repeated PromptOption options = 7;
+  uint64 deadline_unix_ms = 8;
+}
+
+message ActionBroadcast {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  uint64 event_seq = 4;
+  Seat actor_seat = 5;
+  ActionKind action_kind = 6;
+  ActionDetail action_detail = 7;
+  repeated ResultingEffect resulting_effects = 8;
+  GamePhase resulting_phase = 9;
+  Seat next_turn_seat = 10;
+  uint32 wall_tiles_remaining = 11;
+  uint64 action_deadline_unix_ms = 12;
+}
+
+message ActionDetail {
+  oneof detail {
+    DrawDetail draw = 1;
+    DiscardAction discard = 2;
+    ResolvedClaim claim = 3;
+    DeclareWinAction declare_win = 4;
+    PassAction pass = 5;
+    SupplementalKongAction supplemental_kong = 6;
+    FlowerReplacementDetail flower_replacement = 7;
+    StatusChangeDetail status_change = 8;
+    PhaseChangeDetail phase_change = 9;
+    AutoPlayToggleAction auto_play_toggle = 10;
+  }
+}
+
+message DrawDetail {
+  Tile tile = 1;
+  bool visible_to_recipient = 2;
+  bool replacement_draw = 3;
+}
+
+message ResolvedClaim {
+  ClaimKind claim_kind = 1;
+  Tile target_tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  Meld resulting_meld = 5;
+}
+
+message FlowerReplacementDetail {
+  repeated Tile flowers_revealed = 1;
+  uint32 replacement_draws = 2;
+}
+
+message StatusChangeDetail {
+  bool ready = 1;
+  bool auto_play_enabled = 2;
+  PlayerStatus new_status = 3;
+}
+
+message PhaseChangeDetail {
+  GamePhase phase = 1;
+  string round_id = 2;
+}
+
+message ResultingEffect {
+  oneof effect {
+    HandCountDelta hand_count_delta = 1;
+    ScoreDelta score_delta = 2;
+    TurnAdvanced turn_advanced = 3;
+    MeldAdded meld_added = 4;
+    DiscardAdded discard_added = 5;
+    FlowerAdded flower_added = 6;
+    PromptOpened prompt_opened = 7;
+  }
+}
+
+message HandCountDelta {
+  Seat seat = 1;
+  uint32 concealed_tile_count = 2;
+}
+
+message ScoreDelta {
+  Seat seat = 1;
+  int64 delta = 2;
+  int64 new_total = 3;
+}
+
+message TurnAdvanced {
+  Seat next_turn_seat = 1;
+  GamePhase resulting_phase = 2;
+}
+
+message MeldAdded {
+  Seat seat = 1;
+  Meld meld = 2;
+}
+
+message DiscardAdded {
+  Seat seat = 1;
+  DiscardTile discard = 2;
+}
+
+message FlowerAdded {
+  Seat seat = 1;
+  repeated Tile flowers = 2;
+}
+
+message PromptOpened {
+  ClaimWindow claim_window = 1;
+}

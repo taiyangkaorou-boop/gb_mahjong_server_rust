@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package gb_mahjong.client.v1;
+
+import "client/common/enums.proto";
+
+message RoomConfig {
+  string ruleset_id = 1;
+  uint32 seat_count = 2;
+  bool enable_flower_tiles = 3;
+  bool enable_robbing_kong = 4;
+  bool enable_kong_draw = 5;
+  uint32 reconnect_grace_seconds = 6;
+  uint32 action_timeout_ms = 7;
+}
+
+message SyncState {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  SyncReason reason = 4;
+  uint64 server_time_ms = 5;
+  GameSnapshot snapshot = 6;
+}
+
+message GameSnapshot {
+  RoomConfig room_config = 1;
+  GamePhase phase = 2;
+  Seat self_seat = 3;
+  Seat prevailing_wind = 4;
+  Seat dealer_seat = 5;
+  Seat current_turn_seat = 6;
+  uint32 hand_number = 7;
+  uint32 dealer_streak = 8;
+  uint32 wall_tiles_remaining = 9;
+  uint32 dead_wall_tiles_remaining = 10;
+  uint64 latest_event_seq = 11;
+  repeated PlayerState players = 12;
+  SelfHandState self_hand = 13;
+  ClaimWindow active_claim_window = 14;
+  uint64 action_deadline_unix_ms = 15;
+}
+
+message PlayerState {
+  string user_id = 1;
+  string display_name = 2;
+  Seat seat = 3;
+  PlayerStatus status = 4;
+  int64 score = 5;
+  bool is_dealer = 6;
+  bool is_connected = 7;
+  bool auto_play_enabled = 8;
+  uint32 concealed_tile_count = 9;
+  repeated Meld melds = 10;
+  repeated DiscardTile discards = 11;
+  repeated Tile flowers = 12;
+  uint32 replacement_draw_count = 13;
+}
+
+message SelfHandState {
+  repeated Tile concealed_tiles = 1;
+  Tile drawn_tile = 2;
+}
+
+message Meld {
+  MeldKind kind = 1;
+  repeated Tile tiles = 2;
+  Seat from_seat = 3;
+  Tile claimed_tile = 4;
+  bool concealed = 5;
+  uint64 source_event_seq = 6;
+}
+
+message DiscardTile {
+  Tile tile = 1;
+  uint32 turn_index = 2;
+  bool claimed = 3;
+  bool drawn_and_discarded = 4;
+  uint64 source_event_seq = 5;
+}
+
+// In SyncState, options are scoped to the recipient. Eligible seats are global.
+message ClaimWindow {
+  uint64 action_window_id = 1;
+  uint64 source_event_seq = 2;
+  Seat source_seat = 3;
+  Tile target_tile = 4;
+  ActionKind trigger_action_kind = 5;
+  repeated Seat eligible_seats = 6;
+  repeated PromptOption options = 7;
+  uint64 deadline_unix_ms = 8;
+}
+
+message PromptOption {
+  string option_id = 1;
+  ActionKind action_kind = 2;
+  ClaimKind claim_kind = 3;
+  WinType win_type = 4;
+  repeated Tile candidate_tiles = 5;
+  repeated Tile consume_tiles = 6;
+}
+
+message RoundPlayerResult {
+  Seat seat = 1;
+  int64 round_delta = 2;
+  int64 total_score_after = 3;
+}
+
+message FanDetail {
+  string fan_code = 1;
+  string fan_name = 2;
+  uint32 fan_value = 3;
+  uint32 count = 4;
+  string description = 5;
+}
+
+message RevealedHand {
+  Seat seat = 1;
+  repeated Tile concealed_tiles = 2;
+  repeated Meld melds = 3;
+  repeated Tile flowers = 4;
+  bool winner = 5;
+}
+
+message FinalStanding {
+  Seat seat = 1;
+  string user_id = 2;
+  string display_name = 3;
+  int64 final_score = 4;
+  uint32 rank = 5;
+  uint32 rounds_won = 6;
+  uint32 self_draw_wins = 7;
+}

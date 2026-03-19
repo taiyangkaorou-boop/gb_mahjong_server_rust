@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package gb_mahjong.client.v1;
+
+import "client/common/enums.proto";
+
+message PlayerActionRequest {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  uint64 expected_event_seq = 4;
+  uint64 action_window_id = 5;
+
+  oneof action {
+    DiscardAction discard = 10;
+    ClaimAction claim = 11;
+    DeclareWinAction declare_win = 12;
+    PassAction pass = 13;
+    SupplementalKongAction supplemental_kong = 14;
+    AutoPlayToggleAction auto_play_toggle = 15;
+  }
+}
+
+message DiscardAction {
+  Tile tile = 1;
+  bool tsumogiri = 2;
+}
+
+message ClaimAction {
+  ClaimKind claim_kind = 1;
+  Tile target_tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  uint64 source_event_seq = 5;
+}
+
+message DeclareWinAction {
+  WinType win_type = 1;
+  Tile winning_tile = 2;
+  Seat source_seat = 3;
+  uint64 source_event_seq = 4;
+}
+
+message PassAction {
+  uint64 source_event_seq = 1;
+}
+
+message SupplementalKongAction {
+  Tile tile = 1;
+}
+
+message AutoPlayToggleAction {
+  bool enabled = 1;
+}

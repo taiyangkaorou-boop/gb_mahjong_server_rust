@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package gb_mahjong.engine.v1;
+
+import "engine/common/enums.proto";
+
+message RuleConfig {
+  string ruleset_id = 1;
+  uint32 seat_count = 2;
+  bool enable_flower_tiles = 3;
+  bool enable_robbing_kong = 4;
+  bool enable_kong_draw = 5;
+  bool enable_last_tile_bonus = 6;
+  uint32 base_points = 7;
+}
+
+message RoundContext {
+  Seat prevailing_wind = 1;
+  Seat dealer_seat = 2;
+  Seat current_turn_seat = 3;
+  uint32 hand_number = 4;
+  uint32 dealer_streak = 5;
+  uint32 wall_tiles_remaining = 6;
+  uint32 dead_wall_tiles_remaining = 7;
+  bool replacement_draw_pending = 8;
+  bool is_last_tile = 9;
+}
+
+message Meld {
+  MeldKind kind = 1;
+  repeated Tile tiles = 2;
+  Seat from_seat = 3;
+  Tile claimed_tile = 4;
+  bool concealed = 5;
+  uint64 source_event_seq = 6;
+}
+
+message DiscardTile {
+  Tile tile = 1;
+  uint32 turn_index = 2;
+  bool claimed = 3;
+  bool drawn_and_discarded = 4;
+  uint64 source_event_seq = 5;
+}
+
+message EnginePlayerState {
+  Seat seat = 1;
+  int64 current_score = 2;
+  uint32 concealed_tile_count = 3;
+  repeated Meld melds = 4;
+  repeated DiscardTile discards = 5;
+  repeated Tile flowers = 6;
+}
+
+message PrivateHandContext {
+  repeated Tile concealed_tiles = 1;
+  Tile drawn_tile = 2;
+}
+
+message RecentActionContext {
+  uint64 source_event_seq = 1;
+  Seat source_seat = 2;
+  ActionKind source_action_kind = 3;
+  Tile source_tile = 4;
+  bool replacement_draw = 5;
+  bool rob_kong_candidate = 6;
+}
+
+message ClaimWindowContext {
+  uint64 action_window_id = 1;
+  uint64 source_event_seq = 2;
+  Seat source_seat = 3;
+  Tile target_tile = 4;
+  ActionKind trigger_action_kind = 5;
+  repeated Seat eligible_seats = 6;
+}
+
+message DiscardAction {
+  Tile tile = 1;
+  bool tsumogiri = 2;
+}
+
+message ClaimAction {
+  ClaimKind claim_kind = 1;
+  Tile target_tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  uint64 source_event_seq = 5;
+}
+
+message DeclareWinAction {
+  WinType win_type = 1;
+  Tile winning_tile = 2;
+  Seat source_seat = 3;
+  uint64 source_event_seq = 4;
+}
+
+message PassAction {
+  uint64 source_event_seq = 1;
+}
+
+message KongAction {
+  ActionKind kong_kind = 1;
+  Tile tile = 2;
+  repeated Tile consume_tiles = 3;
+  Seat source_seat = 4;
+  uint64 source_event_seq = 5;
+}
+
+message ReplaceFlowerAction {
+  repeated Tile flowers = 1;
+}
+
+message CandidateAction {
+  oneof action {
+    DiscardAction discard = 1;
+    ClaimAction claim = 2;
+    DeclareWinAction declare_win = 3;
+    PassAction pass = 4;
+    KongAction kong = 5;
+    ReplaceFlowerAction replace_flower = 6;
+  }
+}
+
+message MeldResult {
+  Meld meld = 1;
+  repeated Tile consumed_tiles = 2;
+  Tile target_tile = 3;
+}
+
+message FanDetail {
+  string fan_code = 1;
+  string fan_name = 2;
+  uint32 fan_value = 3;
+  uint32 count = 4;
+  string description = 5;
+}
+
+message WinningContext {
+  WinType win_type = 1;
+  Tile winning_tile = 2;
+  bool completes_standard_hand = 3;
+  bool completes_seven_pairs = 4;
+  bool completes_thirteen_orphans = 5;
+  repeated FanDetail tentative_fan_details = 6;
+  uint32 tentative_total_fan = 7;
+}
+
+message SuggestedFollowUp {
+  ActionKind action_kind = 1;
+  ClaimKind claim_kind = 2;
+  repeated Tile tiles = 3;
+}
+
+message HandSnapshot {
+  Seat seat = 1;
+  repeated Tile concealed_tiles = 2;
+  repeated Meld melds = 3;
+  repeated Tile flowers = 4;
+  int64 current_score = 5;
+  bool winner = 6;
+  bool discarder = 7;
+}
+
+message SeatScoreDelta {
+  Seat seat = 1;
+  int64 delta = 2;
+  int64 final_total = 3;
+}

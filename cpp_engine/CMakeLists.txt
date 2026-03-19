@@ -42,6 +42,20 @@ endif()
 
 set(PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../proto")
 set(PROTO_FILE "${PROTO_DIR}/internal_engine.proto")
+set(PROTO_FILES
+  "${PROTO_DIR}/internal_engine.proto"
+  "${PROTO_DIR}/engine/common/enums.proto"
+  "${PROTO_DIR}/engine/common/types.proto"
+  "${PROTO_DIR}/engine/validation.proto"
+  "${PROTO_DIR}/engine/scoring.proto"
+)
+set(PROTO_DEPENDENCIES
+  "${PROTO_DIR}/internal_engine.proto"
+  "${PROTO_DIR}/engine/common/enums.proto"
+  "${PROTO_DIR}/engine/common/types.proto"
+  "${PROTO_DIR}/engine/validation.proto"
+  "${PROTO_DIR}/engine/scoring.proto"
+)
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(GB_MAHJONG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/GB-Mahjong")
 set(GB_MAHJONG_VENDOR_MAHJONG_DIR "${GB_MAHJONG_VENDOR_DIR}/mahjong")
@@ -49,32 +63,59 @@ set(GB_MAHJONG_VENDOR_CONSOLE_DIR "${GB_MAHJONG_VENDOR_DIR}/console")
 
 file(MAKE_DIRECTORY "${GENERATED_DIR}")
 
-set(GENERATED_PROTO_SRC "${GENERATED_DIR}/internal_engine.pb.cc")
-set(GENERATED_PROTO_HDR "${GENERATED_DIR}/internal_engine.pb.h")
+set(GENERATED_PROTO_SRCS
+  "${GENERATED_DIR}/internal_engine.pb.cc"
+  "${GENERATED_DIR}/engine/common/enums.pb.cc"
+  "${GENERATED_DIR}/engine/common/types.pb.cc"
+  "${GENERATED_DIR}/engine/validation.pb.cc"
+  "${GENERATED_DIR}/engine/scoring.pb.cc"
+)
+set(GENERATED_PROTO_HDRS
+  "${GENERATED_DIR}/internal_engine.pb.h"
+  "${GENERATED_DIR}/engine/common/enums.pb.h"
+  "${GENERATED_DIR}/engine/common/types.pb.h"
+  "${GENERATED_DIR}/engine/validation.pb.h"
+  "${GENERATED_DIR}/engine/scoring.pb.h"
+)
 set(GENERATED_GRPC_SRC "${GENERATED_DIR}/internal_engine.grpc.pb.cc")
 set(GENERATED_GRPC_HDR "${GENERATED_DIR}/internal_engine.grpc.pb.h")
 
 add_custom_command(
   OUTPUT
-    "${GENERATED_PROTO_SRC}"
-    "${GENERATED_PROTO_HDR}"
-    "${GENERATED_GRPC_SRC}"
-    "${GENERATED_GRPC_HDR}"
+    ${GENERATED_PROTO_SRCS}
+    ${GENERATED_PROTO_HDRS}
   COMMAND
     "${PROTOC_BIN}"
   ARGS
     "--proto_path=${PROTO_DIR}"
     "--cpp_out=${GENERATED_DIR}"
+    ${PROTO_FILES}
+  DEPENDS
+    ${PROTO_DEPENDENCIES}
+  VERBATIM
+)
+
+add_custom_command(
+  OUTPUT
+    "${GENERATED_GRPC_SRC}"
+    "${GENERATED_GRPC_HDR}"
+  COMMAND
+    "${PROTOC_BIN}"
+  ARGS
     "--grpc_out=${GENERATED_DIR}"
     "--plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_BIN}"
-    "${PROTO_FILE}"
+    "internal_engine.proto"
   DEPENDS
-    "${PROTO_FILE}"
+    ${PROTO_DEPENDENCIES}
+    ${GENERATED_PROTO_SRCS}
+    ${GENERATED_PROTO_HDRS}
+  WORKING_DIRECTORY
+    "${PROTO_DIR}"
   VERBATIM
 )
 
 add_library(engine_proto STATIC
-  "${GENERATED_PROTO_SRC}"
+  ${GENERATED_PROTO_SRCS}
   "${GENERATED_GRPC_SRC}"
 )
 

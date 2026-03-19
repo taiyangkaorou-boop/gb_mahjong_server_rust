@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package gb_mahjong.engine.v1;
+
+import "engine/common/enums.proto";
+import "engine/common/types.proto";
+
+message CalculateScoreRequest {
+  string room_id = 1;
+  string match_id = 2;
+  string round_id = 3;
+  RuleConfig rule_config = 4;
+  RoundContext round_context = 5;
+  WinType win_type = 6;
+  Seat winner_seat = 7;
+  Seat discarder_seat = 8;
+  Tile winning_tile = 9;
+  repeated HandSnapshot hands = 10;
+  repeated SettlementFlag settlement_flags = 11;
+  RecentActionContext terminal_action = 12;
+}
+
+message CalculateScoreResponse {
+  uint32 total_fan = 1;
+  repeated FanDetail fan_details = 2;
+  repeated SeatScoreDelta score_delta_by_seat = 3;
+  repeated SettlementFlag settlement_flags = 4;
+}

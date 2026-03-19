@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package gb_mahjong.client.v1;
+
+import "client/actions.proto";
+import "client/common/enums.proto";
+import "client/common/types.proto";
+import "client/events.proto";
+import "client/settlement.proto";
+
+message ClientFrame {
+  string request_id = 1;
+
+  oneof payload {
+    JoinRoomRequest join_room = 10;
+    ReadyRequest ready = 11;
+    Heartbeat heartbeat = 12;
+    ResumeSessionRequest resume_session = 13;
+    PlayerActionRequest player_action = 14;
+  }
+}
+
+message ServerFrame {
+  uint64 event_seq = 1;
+
+  oneof payload {
+    JoinRoomResponse join_room = 10;
+    SyncState sync_state = 11;
+    ActionBroadcast action_broadcast = 12;
+    ActionPrompt action_prompt = 13;
+    ActionRejected action_rejected = 14;
+    PlayerConnectionChanged player_connection_changed = 15;
+    RoundSettlement round_settlement = 16;
+    MatchSettlement match_settlement = 17;
+    Pong pong = 18;
+  }
+}
+
+message JoinRoomRequest {
+  string room_id = 1;
+  string user_id = 2;
+  string session_token = 3;
+  string display_name = 4;
+  string client_version = 5;
+}
+
+message JoinRoomResponse {
+  string request_id = 1;
+  bool accepted = 2;
+  RejectCode reject_code = 3;
+  string room_id = 4;
+  string match_id = 5;
+  Seat seat = 6;
+  string connection_id = 7;
+  string resume_token = 8;
+  RoomConfig room_config = 9;
+  string message = 10;
+  uint64 latest_event_seq = 11;
+}
+
+message ReadyRequest {
+  bool ready = 1;
+}
+
+message Heartbeat {
+  uint64 client_time_ms = 1;
+  uint64 last_received_event_seq = 2;
+}
+
+message ResumeSessionRequest {
+  string room_id = 1;
+  string user_id = 2;
+  string resume_token = 3;
+  uint64 last_received_event_seq = 4;
+}
+
+message ActionRejected {
+  string request_id = 1;
+  RejectCode reject_code = 2;
+  string message = 3;
+  uint64 expected_event_seq = 4;
+  uint64 actual_event_seq = 5;
+  uint64 action_window_id = 6;
+}
+
+message PlayerConnectionChanged {
+  string room_id = 1;
+  string match_id = 2;
+  string user_id = 3;
+  Seat seat = 4;
+  PlayerStatus status = 5;
+  bool connected = 6;
+  uint64 reconnect_deadline_unix_ms = 7;
+}
+
+message Pong {
+  string request_id = 1;
+  uint64 server_time_ms = 2;
+  uint64 echoed_client_time_ms = 3;
+  uint64 latest_event_seq = 4;
+}
