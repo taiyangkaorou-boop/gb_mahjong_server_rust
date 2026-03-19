@@ -23,6 +23,25 @@ impl RoomState {
                 }]
             })
             .unwrap_or_default();
+        self.persist_match_event(
+            "action_broadcast",
+            event_seq,
+            Some(seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "actor_seat": seat.as_str_name(),
+                "action_kind": "ACTION_KIND_DISCARD",
+                "tile": tile.as_str_name(),
+                "tsumogiri": discard
+                    .as_ref()
+                    .map(|discard| discard.drawn_and_discarded)
+                    .unwrap_or(false),
+                "wall_tiles_remaining": self.wall_tiles_remaining,
+            }),
+        );
 
         self.broadcast_action_frame(ServerFrame {
             event_seq,
@@ -61,6 +80,23 @@ impl RoomState {
         replacement_draw: bool,
     ) {
         // 当前先发送可见版摸牌细节；后续如果需要更严格的隐藏信息，可在这里拆成定向广播。
+        self.persist_match_event(
+            "action_broadcast",
+            event_seq,
+            Some(seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "actor_seat": seat.as_str_name(),
+                "action_kind": "ACTION_KIND_DRAW",
+                "draw_tile": tile.as_str_name(),
+                "replacement_draw": replacement_draw,
+                "wall_tiles_remaining": self.wall_tiles_remaining,
+            }),
+        );
+
         self.broadcast_action_frame(ServerFrame {
             event_seq,
             payload: Some(server_frame::Payload::ActionBroadcast(ActionBroadcast {
@@ -118,6 +154,23 @@ impl RoomState {
                 },
             )),
         }];
+        self.persist_match_event(
+            "action_broadcast",
+            event_seq,
+            Some(seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "actor_seat": seat.as_str_name(),
+                "action_kind": claim_action_kind_label(claim_kind),
+                "target_tile": target_tile.as_str_name(),
+                "source_seat": source_seat.as_str_name(),
+                "consume_tiles": consume_tiles.iter().map(|tile| tile.as_str_name()).collect::<Vec<_>>(),
+                "resulting_meld": meld_json(&resulting_meld),
+            }),
+        );
 
         self.broadcast_action_frame(ServerFrame {
             event_seq,
@@ -158,6 +211,23 @@ impl RoomState {
         tile: Tile,
         resulting_meld: Meld,
     ) {
+        self.persist_match_event(
+            "action_broadcast",
+            event_seq,
+            Some(seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "actor_seat": seat.as_str_name(),
+                "action_kind": "ACTION_KIND_SUPPLEMENTAL_KONG",
+                "tile": tile.as_str_name(),
+                "source_event_seq": event_seq,
+                "resulting_meld": meld_json(&resulting_meld),
+            }),
+        );
+
         self.broadcast_action_frame(ServerFrame {
             event_seq,
             payload: Some(server_frame::Payload::ActionBroadcast(ActionBroadcast {
@@ -199,6 +269,24 @@ impl RoomState {
         discarder_seat: Option<Seat>,
         source_event_seq: u64,
     ) {
+        self.persist_match_event(
+            "action_broadcast",
+            event_seq,
+            Some(seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "actor_seat": seat.as_str_name(),
+                "action_kind": "ACTION_KIND_DECLARE_WIN",
+                "win_type": win_type.as_str_name(),
+                "winning_tile": winning_tile.as_str_name(),
+                "discarder_seat": discarder_seat.map(|seat| seat.as_str_name().to_owned()),
+                "source_event_seq": source_event_seq,
+            }),
+        );
+
         self.broadcast_action_frame(ServerFrame {
             event_seq,
             payload: Some(server_frame::Payload::ActionBroadcast(ActionBroadcast {
@@ -326,6 +414,35 @@ impl RoomState {
             .filter_map(|flag| map_engine_settlement_flag_to_client(*flag))
             .map(|flag| flag as i32)
             .collect();
+        self.persist_match_event(
+            "round_settlement",
+            event_seq,
+            Some(winner_seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "winner_seat": winner_seat.as_str_name(),
+                "discarder_seat": discarder_seat.map(|seat| seat.as_str_name().to_owned()),
+                "win_type": win_type.as_str_name(),
+                "winning_tile": winning_tile.as_str_name(),
+                "player_results": response.score_delta_by_seat.iter().filter_map(|delta| map_engine_seat_to_client(delta.seat).map(|seat| serde_json::json!({
+                    "seat": seat.as_str_name(),
+                    "round_delta": delta.delta,
+                    "total_score_after": delta.final_total,
+                }))).collect::<Vec<_>>(),
+                "fan_details": response.fan_details.iter().map(|fan| serde_json::json!({
+                    "fan_code": fan.fan_code,
+                    "fan_name": fan.fan_name,
+                    "fan_value": fan.fan_value,
+                    "count": fan.count,
+                    "description": fan.description,
+                })).collect::<Vec<_>>(),
+                "settlement_flags": response.settlement_flags.iter().filter_map(|flag| map_engine_settlement_flag_to_client(*flag).map(|flag| flag.as_str_name().to_owned())).collect::<Vec<_>>(),
+                "wall_tiles_remaining": self.wall_tiles_remaining,
+            }),
+        );
 
         let frame = ServerFrame {
             event_seq,
@@ -602,5 +719,126 @@ impl RoomState {
                 }),
             })),
         }
+    }
+
+    fn persist_match_event(
+        &self,
+        event_type: &str,
+        event_seq: u64,
+        actor_seat: Option<Seat>,
+        event_payload: serde_json::Value,
+    ) {
+        let actor_user_id = actor_seat.and_then(|seat| {
+            self.players_by_seat
+                .get(&seat)
+                .map(|player| player.user_id.clone())
+        });
+
+        self.match_event_writer.append(NewMatchEventRecord {
+            match_id: self.match_id.clone(),
+            round_id: Some(self.round_id()),
+            event_seq: event_seq as i64,
+            event_type: event_type.to_owned(),
+            actor_user_id,
+            actor_seat: actor_seat.map(|seat| seat.as_str_name().to_owned()),
+            request_id: None,
+            correlation_id: None,
+            causation_event_seq: None,
+            event_payload,
+        });
+    }
+
+    fn persist_round_started_event(&self, event_seq: u64) {
+        let players = SEAT_ORDER
+            .into_iter()
+            .filter_map(|seat| {
+                let player = self.players_by_seat.get(&seat)?;
+                let round_state = self.player_round_state.get(&seat)?;
+                Some(serde_json::json!({
+                    "seat": seat.as_str_name(),
+                    "user_id": player.user_id,
+                    "display_name": player.display_name,
+                    "concealed_tiles": round_state.concealed_tiles.iter().map(|tile| tile.as_str_name()).collect::<Vec<_>>(),
+                    "drawn_tile": round_state.drawn_tile.map(|tile| tile.as_str_name().to_owned()),
+                    "melds": round_state.melds.iter().map(meld_json).collect::<Vec<_>>(),
+                    "flowers": round_state.flowers.iter().map(|tile| tile.as_str_name()).collect::<Vec<_>>(),
+                    "score": player.score,
+                }))
+            })
+            .collect::<Vec<_>>();
+
+        self.persist_match_event(
+            "round_started",
+            event_seq,
+            Some(self.dealer_seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "phase": self.phase.as_str_name(),
+                "prevailing_wind": self.prevailing_wind.as_str_name(),
+                "dealer_seat": self.dealer_seat.as_str_name(),
+                "current_turn_seat": self.current_turn_seat.as_str_name(),
+                "hand_number": self.hand_number,
+                "dealer_streak": self.dealer_streak,
+                "wall_tiles_remaining": self.wall_tiles_remaining,
+                "dead_wall_tiles_remaining": self.dead_wall_tiles_remaining,
+                "players": players,
+            }),
+        );
+    }
+
+    fn persist_claim_window_opened_event(&self, window: &ActiveClaimWindowState) {
+        self.persist_match_event(
+            "claim_window_opened",
+            window.source_event_seq,
+            Some(window.source_seat),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "action_window_id": window.action_window_id,
+                "source_event_seq": window.source_event_seq,
+                "source_seat": window.source_seat.as_str_name(),
+                "target_tile": window.target_tile.as_str_name(),
+                "trigger_action_kind": window.trigger_action_kind.as_str_name(),
+                "eligible_seats": window.eligible_seats.iter().map(|seat| seat.as_str_name()).collect::<Vec<_>>(),
+                "options_by_seat": window.options_by_seat.iter().map(|(seat, options)| serde_json::json!({
+                    "seat": seat.as_str_name(),
+                    "options": options.iter().map(prompt_option_json).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "deadline_unix_ms": window.deadline_unix_ms,
+            }),
+        );
+    }
+
+    fn persist_claim_window_resolved_event(
+        &self,
+        window: &ActiveClaimWindowState,
+        responded_seats: &HashMap<Seat, ClaimResponse>,
+        winner_seat: Option<Seat>,
+        resolution_kind: &str,
+    ) {
+        self.persist_match_event(
+            "claim_window_resolved",
+            self.current_event_seq(),
+            winner_seat.or(Some(window.source_seat)),
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "action_window_id": window.action_window_id,
+                "source_event_seq": window.source_event_seq,
+                "source_seat": window.source_seat.as_str_name(),
+                "target_tile": window.target_tile.as_str_name(),
+                "resolution_kind": resolution_kind,
+                "winner_seat": winner_seat.map(|seat| seat.as_str_name().to_owned()),
+                "responses": responded_seats.iter().map(|(seat, response)| serde_json::json!({
+                    "seat": seat.as_str_name(),
+                    "response": claim_response_json(response),
+                })).collect::<Vec<_>>(),
+            }),
+        );
     }
 }

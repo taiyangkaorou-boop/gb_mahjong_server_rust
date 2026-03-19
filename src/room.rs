@@ -11,6 +11,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
+    db::{MatchEventWriter, NewMatchEventRecord},
     engine::RuleEngineHandle,
     proto::{
         client::{
@@ -82,6 +83,7 @@ pub struct RoomManager {
     rooms: Arc<RwLock<HashMap<String, RoomHandle>>>,
     rule_engine: RuleEngineHandle,
     wall_factory: WallFactory,
+    match_event_writer: MatchEventWriter,
 }
 
 impl Default for RoomManager {
@@ -214,6 +216,7 @@ struct RoomState {
     room_config: RoomConfig,
     wall_factory: WallFactory,
     room_command_tx: mpsc::Sender<RoomCommand>,
+    match_event_writer: MatchEventWriter,
     phase: GamePhase,
     prevailing_wind: Seat,
     dealer_seat: Seat,

@@ -576,3 +576,103 @@ fn tile_from_suit_and_rank(suit: &str, rank: i32) -> Tile {
         _ => Tile::Unspecified,
     }
 }
+
+fn meld_json(meld: &Meld) -> serde_json::Value {
+    serde_json::json!({
+        "kind": crate::proto::client::MeldKind::try_from(meld.kind)
+            .map(|kind| kind.as_str_name().to_owned())
+            .unwrap_or_else(|_| "MELD_KIND_UNSPECIFIED".to_owned()),
+        "tiles": meld
+            .tiles
+            .iter()
+            .filter_map(|tile| Tile::try_from(*tile).ok())
+            .map(|tile| tile.as_str_name().to_owned())
+            .collect::<Vec<_>>(),
+        "from_seat": Seat::try_from(meld.from_seat)
+            .map(|seat| seat.as_str_name().to_owned())
+            .unwrap_or_else(|_| "SEAT_UNSPECIFIED".to_owned()),
+        "claimed_tile": Tile::try_from(meld.claimed_tile)
+            .map(|tile| tile.as_str_name().to_owned())
+            .unwrap_or_else(|_| "TILE_UNSPECIFIED".to_owned()),
+        "concealed": meld.concealed,
+        "source_event_seq": meld.source_event_seq,
+    })
+}
+
+fn prompt_option_json(option: &PromptOption) -> serde_json::Value {
+    serde_json::json!({
+        "option_id": option.option_id,
+        "action_kind": crate::proto::client::ActionKind::try_from(option.action_kind)
+            .map(|kind| kind.as_str_name().to_owned())
+            .unwrap_or_else(|_| "ACTION_KIND_UNSPECIFIED".to_owned()),
+        "claim_kind": crate::proto::client::ClaimKind::try_from(option.claim_kind)
+            .map(|kind| kind.as_str_name().to_owned())
+            .unwrap_or_else(|_| "CLAIM_KIND_UNSPECIFIED".to_owned()),
+        "win_type": crate::proto::client::WinType::try_from(option.win_type)
+            .map(|kind| kind.as_str_name().to_owned())
+            .unwrap_or_else(|_| "WIN_TYPE_UNSPECIFIED".to_owned()),
+        "candidate_tiles": option
+            .candidate_tiles
+            .iter()
+            .filter_map(|tile| Tile::try_from(*tile).ok())
+            .map(|tile| tile.as_str_name().to_owned())
+            .collect::<Vec<_>>(),
+        "consume_tiles": option
+            .consume_tiles
+            .iter()
+            .filter_map(|tile| Tile::try_from(*tile).ok())
+            .map(|tile| tile.as_str_name().to_owned())
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn claim_response_json(response: &ClaimResponse) -> serde_json::Value {
+    match response {
+        ClaimResponse::Pass => serde_json::json!({
+            "kind": "PASS",
+        }),
+        ClaimResponse::Claim(claim) => serde_json::json!({
+            "kind": "CLAIM",
+            "claim_kind": crate::proto::client::ClaimKind::try_from(claim.claim_kind)
+                .map(|kind| kind.as_str_name().to_owned())
+                .unwrap_or_else(|_| "CLAIM_KIND_UNSPECIFIED".to_owned()),
+            "target_tile": Tile::try_from(claim.target_tile)
+                .map(|tile| tile.as_str_name().to_owned())
+                .unwrap_or_else(|_| "TILE_UNSPECIFIED".to_owned()),
+            "consume_tiles": claim
+                .consume_tiles
+                .iter()
+                .filter_map(|tile| Tile::try_from(*tile).ok())
+                .map(|tile| tile.as_str_name().to_owned())
+                .collect::<Vec<_>>(),
+            "source_seat": Seat::try_from(claim.source_seat)
+                .map(|seat| seat.as_str_name().to_owned())
+                .unwrap_or_else(|_| "SEAT_UNSPECIFIED".to_owned()),
+            "source_event_seq": claim.source_event_seq,
+        }),
+        ClaimResponse::DeclareWin(declare_win) => serde_json::json!({
+            "kind": "DECLARE_WIN",
+            "win_type": crate::proto::client::WinType::try_from(declare_win.win_type)
+                .map(|kind| kind.as_str_name().to_owned())
+                .unwrap_or_else(|_| "WIN_TYPE_UNSPECIFIED".to_owned()),
+            "winning_tile": Tile::try_from(declare_win.winning_tile)
+                .map(|tile| tile.as_str_name().to_owned())
+                .unwrap_or_else(|_| "TILE_UNSPECIFIED".to_owned()),
+            "source_seat": Seat::try_from(declare_win.source_seat)
+                .map(|seat| seat.as_str_name().to_owned())
+                .unwrap_or_else(|_| "SEAT_UNSPECIFIED".to_owned()),
+            "source_event_seq": declare_win.source_event_seq,
+        }),
+    }
+}
+
+fn claim_action_kind_label(claim_kind: crate::proto::client::ClaimKind) -> &'static str {
+    match claim_kind {
+        crate::proto::client::ClaimKind::Chi => "ACTION_KIND_CHI",
+        crate::proto::client::ClaimKind::Peng => "ACTION_KIND_PENG",
+        crate::proto::client::ClaimKind::ExposedKong => "ACTION_KIND_EXPOSED_KONG",
+        crate::proto::client::ClaimKind::DiscardWin => "ACTION_KIND_DECLARE_WIN",
+        crate::proto::client::ClaimKind::RobKongWin => "ACTION_KIND_DECLARE_WIN",
+        crate::proto::client::ClaimKind::Unspecified => "ACTION_KIND_UNSPECIFIED",
+    }
+}

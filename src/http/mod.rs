@@ -276,6 +276,7 @@ fn map_auth_error(error: AuthError) -> ApiError {
         AuthError::InvalidSession => {
             ApiError::Unauthorized("session is invalid or expired".to_owned())
         }
+        AuthError::Storage(message) => ApiError::Internal(message),
     }
 }
 
@@ -302,5 +303,6 @@ fn map_lobby_error(error: LobbyError) -> ApiError {
         LobbyError::NotRoomMember => {
             ApiError::Forbidden("user is not a member of this room".to_owned())
         }
+        LobbyError::Storage(message) => ApiError::Internal(message),
     }
 }

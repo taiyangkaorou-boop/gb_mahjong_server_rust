@@ -4,6 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
 use serde::Serialize;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -101,6 +102,60 @@ pub enum LobbyError {
     CannotKickSelf,
     NotRoomMember,
     InvalidRoomCode,
+    Storage(String),
+}
+
+#[async_trait]
+pub trait LobbyRepository: Send + Sync {
+    // 大厅仓储直接暴露事务级业务动作，而不是底层表 CRUD。
+    async fn create_room(
+        &self,
+        user_id: &str,
+        display_name: &str,
+    ) -> Result<LobbyRoomView, LobbyError>;
+
+    async fn join_room(
+        &self,
+        user_id: &str,
+        display_name: &str,
+        room_code: &str,
+    ) -> Result<LobbyRoomView, LobbyError>;
+
+    async fn get_room_for_user(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<LobbyRoomView, LobbyError>;
+
+    async fn leave_room(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<Option<LobbyRoomView>, LobbyError>;
+
+    async fn kick_member(
+        &self,
+        owner_user_id: &str,
+        room_id: &str,
+        target_user_id: &str,
+    ) -> Result<LobbyRoomView, LobbyError>;
+
+    async fn disband_room(&self, owner_user_id: &str, room_id: &str) -> Result<(), LobbyError>;
+
+    async fn authorize_room_entry(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<LobbyJoinAccess, LobbyError>;
+
+    async fn set_member_ready(
+        &self,
+        room_id: &str,
+        user_id: &str,
+        ready: bool,
+    ) -> Result<bool, LobbyError>;
+
+    async fn snapshot_room_member_records(&self, room_id: &str) -> Vec<RoomMemberRecord>;
 }
 
 #[derive(Default)]
@@ -112,21 +167,14 @@ struct LobbyStore {
     room_id_by_user: HashMap<String, String>,
 }
 
-#[derive(Clone)]
-pub struct LobbyService {
+#[derive(Clone, Default)]
+pub struct InMemoryLobbyRepository {
     store: Arc<RwLock<LobbyStore>>,
 }
 
-impl Default for LobbyService {
-    fn default() -> Self {
-        Self {
-            store: Arc::new(RwLock::new(LobbyStore::default())),
-        }
-    }
-}
-
-impl LobbyService {
-    pub async fn create_room(
+#[async_trait]
+impl LobbyRepository for InMemoryLobbyRepository {
+    async fn create_room(
         &self,
         user_id: &str,
         display_name: &str,
@@ -165,12 +213,12 @@ impl LobbyService {
             .room_id_by_user
             .insert(user_id.to_owned(), room_id.clone());
         store.room_id_by_code.insert(room_code, room_id.clone());
-        store.rooms_by_id.insert(room_id.clone(), room.clone());
+        store.rooms_by_id.insert(room_id, room.clone());
 
         Ok(to_room_view(&room))
     }
 
-    pub async fn join_room(
+    async fn join_room(
         &self,
         user_id: &str,
         display_name: &str,
@@ -222,7 +270,7 @@ impl LobbyService {
         Ok(to_room_view(&snapshot))
     }
 
-    pub async fn get_room_for_user(
+    async fn get_room_for_user(
         &self,
         user_id: &str,
         room_id: &str,
@@ -239,7 +287,7 @@ impl LobbyService {
         Ok(to_room_view(room))
     }
 
-    pub async fn leave_room(
+    async fn leave_room(
         &self,
         user_id: &str,
         room_id: &str,
@@ -287,7 +335,7 @@ impl LobbyService {
         Ok(room_view)
     }
 
-    pub async fn kick_member(
+    async fn kick_member(
         &self,
         owner_user_id: &str,
         room_id: &str,
@@ -326,7 +374,7 @@ impl LobbyService {
         Ok(snapshot)
     }
 
-    pub async fn disband_room(&self, owner_user_id: &str, room_id: &str) -> Result<(), LobbyError> {
+    async fn disband_room(&self, owner_user_id: &str, room_id: &str) -> Result<(), LobbyError> {
         // 解散房间会一次性清理 room 与 member 反向索引。
         let mut store = self.store.write().await;
         let Some(room) = store.rooms_by_id.get(room_id).cloned() else {
@@ -347,7 +395,7 @@ impl LobbyService {
         Ok(())
     }
 
-    pub async fn authorize_room_entry(
+    async fn authorize_room_entry(
         &self,
         room_id: &str,
         user_id: &str,
@@ -368,7 +416,7 @@ impl LobbyService {
         })
     }
 
-    pub async fn set_member_ready(
+    async fn set_member_ready(
         &self,
         room_id: &str,
         user_id: &str,
@@ -402,7 +450,7 @@ impl LobbyService {
         Ok(all_ready)
     }
 
-    pub async fn snapshot_room_member_records(&self, room_id: &str) -> Vec<RoomMemberRecord> {
+    async fn snapshot_room_member_records(&self, room_id: &str) -> Vec<RoomMemberRecord> {
         // 供 HTTP 解散房间等流程快速获取成员列表使用。
         let store = self.store.read().await;
         let Some(room) = store.rooms_by_id.get(room_id) else {
@@ -421,6 +469,96 @@ impl LobbyService {
                 left_at_unix_ms: member.left_at_unix_ms,
             })
             .collect()
+    }
+}
+
+#[derive(Clone)]
+pub struct LobbyService {
+    repo: Arc<dyn LobbyRepository>,
+}
+
+impl Default for LobbyService {
+    fn default() -> Self {
+        Self::in_memory()
+    }
+}
+
+impl LobbyService {
+    pub fn new(repo: Arc<dyn LobbyRepository>) -> Self {
+        Self { repo }
+    }
+
+    pub fn in_memory() -> Self {
+        Self::new(Arc::new(InMemoryLobbyRepository::default()))
+    }
+
+    pub async fn create_room(
+        &self,
+        user_id: &str,
+        display_name: &str,
+    ) -> Result<LobbyRoomView, LobbyError> {
+        self.repo.create_room(user_id, display_name).await
+    }
+
+    pub async fn join_room(
+        &self,
+        user_id: &str,
+        display_name: &str,
+        room_code: &str,
+    ) -> Result<LobbyRoomView, LobbyError> {
+        self.repo.join_room(user_id, display_name, room_code).await
+    }
+
+    pub async fn get_room_for_user(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<LobbyRoomView, LobbyError> {
+        self.repo.get_room_for_user(user_id, room_id).await
+    }
+
+    pub async fn leave_room(
+        &self,
+        user_id: &str,
+        room_id: &str,
+    ) -> Result<Option<LobbyRoomView>, LobbyError> {
+        self.repo.leave_room(user_id, room_id).await
+    }
+
+    pub async fn kick_member(
+        &self,
+        owner_user_id: &str,
+        room_id: &str,
+        target_user_id: &str,
+    ) -> Result<LobbyRoomView, LobbyError> {
+        self.repo
+            .kick_member(owner_user_id, room_id, target_user_id)
+            .await
+    }
+
+    pub async fn disband_room(&self, owner_user_id: &str, room_id: &str) -> Result<(), LobbyError> {
+        self.repo.disband_room(owner_user_id, room_id).await
+    }
+
+    pub async fn authorize_room_entry(
+        &self,
+        room_id: &str,
+        user_id: &str,
+    ) -> Result<LobbyJoinAccess, LobbyError> {
+        self.repo.authorize_room_entry(room_id, user_id).await
+    }
+
+    pub async fn set_member_ready(
+        &self,
+        room_id: &str,
+        user_id: &str,
+        ready: bool,
+    ) -> Result<bool, LobbyError> {
+        self.repo.set_member_ready(room_id, user_id, ready).await
+    }
+
+    pub async fn snapshot_room_member_records(&self, room_id: &str) -> Vec<RoomMemberRecord> {
+        self.repo.snapshot_room_member_records(room_id).await
     }
 }
 
@@ -453,7 +591,7 @@ fn next_room_code(existing: &HashMap<String, String>) -> String {
     }
 }
 
-fn to_room_view(room: &LobbyRoom) -> LobbyRoomView {
+pub fn to_room_view(room: &LobbyRoom) -> LobbyRoomView {
     // 对外 JSON 视图不暴露内部索引和时间戳，只返回 UI 真正需要的大厅快照。
     LobbyRoomView {
         room_id: room.room_id.clone(),

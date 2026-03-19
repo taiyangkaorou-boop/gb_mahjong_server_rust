@@ -9,6 +9,7 @@ impl RoomState {
         rule_engine: RuleEngineHandle,
         wall_factory: WallFactory,
         room_command_tx: mpsc::Sender<RoomCommand>,
+        match_event_writer: MatchEventWriter,
     ) -> Self {
         Self {
             rule_engine,
@@ -16,6 +17,7 @@ impl RoomState {
             room_id,
             wall_factory,
             room_command_tx,
+            match_event_writer,
             room_config: RoomConfig {
                 ruleset_id: "gb_mahjong_cn_v1".to_owned(),
                 seat_count: 4,
@@ -1055,6 +1057,7 @@ impl RoomState {
         let Some((winner_seat, winning_response)) =
             self.select_highest_priority_claim_response(&window, &responded_seats)
         else {
+            self.persist_claim_window_resolved_event(&window, &responded_seats, None, "PASS");
             match window.trigger_action_kind {
                 crate::proto::client::ActionKind::SupplementalKong => {
                     if let Err(error) = self.apply_supplemental_kong(
@@ -1078,6 +1081,17 @@ impl RoomState {
             }
             return;
         };
+
+        self.persist_claim_window_resolved_event(
+            &window,
+            &responded_seats,
+            Some(winner_seat),
+            match &winning_response {
+                ClaimResponse::Pass => "PASS",
+                ClaimResponse::DeclareWin(_) => "DECLARE_WIN",
+                ClaimResponse::Claim(_) => "CLAIM",
+            },
+        );
 
         match winning_response {
             ClaimResponse::Pass => {
@@ -1285,6 +1299,13 @@ impl RoomState {
         if let Some(runtime) = self.round_runtime.as_mut() {
             runtime.active_claim_window = Some(window);
         }
+        if let Some(window) = self
+            .round_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.active_claim_window.as_ref())
+        {
+            self.persist_claim_window_opened_event(window);
+        }
         self.phase = GamePhase::WaitingClaim;
         self.send_claim_prompts(action_window_id, deadline_unix_ms, &eligible_seats);
         self.schedule_claim_window_timeout(action_window_id);
@@ -1447,6 +1468,13 @@ impl RoomState {
         if let Some(runtime) = self.round_runtime.as_mut() {
             runtime.active_claim_window = Some(window);
         }
+        if let Some(window) = self
+            .round_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.active_claim_window.as_ref())
+        {
+            self.persist_claim_window_opened_event(window);
+        }
         self.send_claim_prompts(action_window_id, deadline_unix_ms, &eligible_seats);
         self.schedule_claim_window_timeout(action_window_id);
 
@@ -1607,6 +1635,22 @@ impl RoomState {
                     replacement_draw: draw_outcome.replacement_draw,
                     rob_kong_candidate: false,
                 });
+                self.persist_match_event(
+                    "action_broadcast",
+                    draw_event_seq,
+                    Some(next_turn_seat),
+                    serde_json::json!({
+                        "room_id": self.room_id,
+                        "match_id": self.match_id,
+                        "round_id": self.round_id(),
+                        "event_seq": draw_event_seq,
+                        "actor_seat": next_turn_seat.as_str_name(),
+                        "action_kind": "ACTION_KIND_DRAW",
+                        "draw_tile": draw_outcome.tile.as_str_name(),
+                        "replacement_draw": draw_outcome.replacement_draw,
+                        "wall_tiles_remaining": self.wall_tiles_remaining,
+                    }),
+                );
             }
             Ok(None) => {
                 self.phase = GamePhase::RoundSettlement;
@@ -1678,6 +1722,7 @@ impl RoomState {
             rob_kong_candidate: false,
         });
         self.sync_wall_counters();
+        self.persist_round_started_event(draw_event_seq);
 
         Ok(())
     }

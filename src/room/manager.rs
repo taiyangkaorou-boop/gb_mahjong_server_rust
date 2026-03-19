@@ -5,10 +5,18 @@ impl RoomManager {
     // 这一段只负责 RoomManager 对外暴露的消息入口：
     // 它把网关请求转成 RoomCommand，并负责首次创建 room task。
     pub fn with_rule_engine(rule_engine: RuleEngineHandle) -> Self {
+        Self::with_rule_engine_and_event_writer(rule_engine, MatchEventWriter::noop())
+    }
+
+    pub fn with_rule_engine_and_event_writer(
+        rule_engine: RuleEngineHandle,
+        match_event_writer: MatchEventWriter,
+    ) -> Self {
         Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             rule_engine,
             wall_factory: Arc::new(build_shuffled_wall),
+            match_event_writer,
         }
     }
 
@@ -21,6 +29,7 @@ impl RoomManager {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             rule_engine,
             wall_factory,
+            match_event_writer: MatchEventWriter::noop(),
         }
     }
 
@@ -214,6 +223,7 @@ impl RoomManager {
             self.rule_engine.clone(),
             self.wall_factory.clone(),
             command_tx.clone(),
+            self.match_event_writer.clone(),
         );
 
         info!(%room_id, "spawning room task");

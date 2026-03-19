@@ -8,11 +8,15 @@ mod proto;
 mod room;
 mod ws;
 
-use std::{env, net::SocketAddr};
+use std::{env, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use app::{build_router, AppState};
-use auth::AuthService;
+use auth::{AuthService, DEFAULT_SESSION_TTL_MS};
+use db::{
+    connect_pg_pool, DatabaseConfig, MatchEventWriter, PostgresAuthRepository,
+    PostgresLobbyRepository, PostgresMatchEventRepository,
+};
 use engine::{RuleEngineHandle, DEFAULT_RULE_ENGINE_ENDPOINT};
 use lobby::LobbyService;
 use room::RoomManager;
@@ -30,10 +34,22 @@ async fn main() -> anyhow::Result<()> {
     let rule_engine_endpoint = resolve_rule_engine_endpoint();
     let rule_engine = RuleEngineHandle::tonic(rule_engine_endpoint.clone())
         .with_context(|| format!("configure rule engine client for {rule_engine_endpoint}"))?;
+    let database_config = DatabaseConfig::from_env().context("resolve database configuration")?;
+    let pool = connect_pg_pool(&database_config)
+        .await
+        .context("connect postgres pool for gateway services")?;
+    let auth_service = AuthService::new(
+        Arc::new(PostgresAuthRepository::new(pool.clone())),
+        DEFAULT_SESSION_TTL_MS,
+    );
+    let lobby_service = LobbyService::new(Arc::new(PostgresLobbyRepository::new(pool.clone())));
+    let match_event_writer = MatchEventWriter::from_repository(Arc::new(
+        PostgresMatchEventRepository::new(pool),
+    ));
     let state = AppState::new(
-        RoomManager::with_rule_engine(rule_engine),
-        AuthService::default(),
-        LobbyService::default(),
+        RoomManager::with_rule_engine_and_event_writer(rule_engine, match_event_writer),
+        auth_service,
+        lobby_service,
     );
     let app = build_router(state);
 
