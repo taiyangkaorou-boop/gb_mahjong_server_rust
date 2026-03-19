@@ -9,6 +9,8 @@
 
 namespace gb_mahjong::engine_server {
 
+// gRPC service 层尽量保持轻薄：
+// 它只负责承接 RPC、调用适配层、回填 protobuf 响应。
 class RuleEngineServiceImpl final
     : public gb_mahjong::engine::v1::RuleEngineService::Service {
  public:
@@ -29,4 +31,3 @@ class RuleEngineServiceImpl final
 };
 
 }  // namespace gb_mahjong::engine_server
-

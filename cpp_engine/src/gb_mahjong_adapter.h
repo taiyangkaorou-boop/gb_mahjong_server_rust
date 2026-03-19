@@ -8,6 +8,8 @@
 
 namespace gb_mahjong::engine_server {
 
+// 适配层负责把项目内部 protobuf 协议转换成 GB-Mahjong 能理解的数据结构。
+// 房间并发、抢操作优先级、窗口超时等问题都不在这里处理。
 class GbMahjongAdapter {
  public:
   struct ValidateOutcome {
@@ -44,4 +46,3 @@ class GbMahjongAdapter {
 };
 
 }  // namespace gb_mahjong::engine_server
-

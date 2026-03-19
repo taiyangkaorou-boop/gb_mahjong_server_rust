@@ -2,8 +2,7 @@ syntax = "proto3";
 
 package gb_mahjong.engine.v1;
 
-// The canonical gRPC service definition remains in proto/internal_engine.proto
-// to preserve the existing internal_engine.grpc.pb.h generated include used by
-// the C++ rule engine target. This file exists to reserve the directory slot
-// for a future full split once generated include compatibility is no longer a
-// constraint.
+// 正式的 gRPC service 定义目前仍保留在 proto/internal_engine.proto。
+// 这样做是为了继续生成稳定的 internal_engine.grpc.pb.h，
+// 避免影响当前 C++ 规则引擎目标的 include 路径。
+// 本文件先保留目录位置，等未来不再依赖该兼容性时再做彻底拆分。

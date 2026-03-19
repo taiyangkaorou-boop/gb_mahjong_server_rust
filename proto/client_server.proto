@@ -6,6 +6,8 @@ option java_multiple_files = true;
 option java_package = "com.gbmahjong.client.v1";
 option csharp_namespace = "GbMahjong.Client.V1";
 
+// 客户端协议根入口文件。
+// 只编译这一份即可获得完整的客户端通信协议定义。
 import public "client/common/enums.proto";
 import public "client/common/types.proto";
 import public "client/actions.proto";

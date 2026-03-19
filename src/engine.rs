@@ -16,6 +16,7 @@ pub const DEFAULT_RULE_ENGINE_ENDPOINT: &str = "http://127.0.0.1:50051";
 
 #[derive(Clone)]
 pub struct RuleEngineHandle {
+    // 业务层只依赖这个 trait 对象，便于在 tonic、noop、mock 之间切换。
     inner: Arc<dyn RuleEngine>,
 }
 
@@ -34,6 +35,7 @@ impl RuleEngineHandle {
         Ok(Self::new(TonicRuleEngine::new(endpoint)?))
     }
 
+    // Handle 自身不做任何业务裁决，只是把调用转发给具体实现。
     pub async fn validate_action(
         &self,
         request: ValidateActionRequest,
@@ -57,19 +59,30 @@ impl Default for RuleEngineHandle {
 
 #[async_trait]
 pub trait RuleEngine: Send + Sync {
-    async fn validate_action(&self, request: ValidateActionRequest) -> Result<ValidateActionResponse>;
-    async fn calculate_score(&self, request: CalculateScoreRequest) -> Result<CalculateScoreResponse>;
+    // 校验接口用于“动作是否允许”这一前置判断，不负责房间并发裁决。
+    async fn validate_action(
+        &self,
+        request: ValidateActionRequest,
+    ) -> Result<ValidateActionResponse>;
+    // 结算接口用于终局算番/算分，调用时机由 Rust 房间状态机决定。
+    async fn calculate_score(
+        &self,
+        request: CalculateScoreRequest,
+    ) -> Result<CalculateScoreResponse>;
 }
 
 #[derive(Clone)]
 pub struct TonicRuleEngine {
+    // endpoint 主要用于错误上下文和日志诊断。
     endpoint: String,
+    // Channel 是可共享的连接句柄，clone 成本很低。
     channel: Channel,
 }
 
 impl TonicRuleEngine {
     pub fn new(endpoint: impl Into<String>) -> Result<Self> {
         let endpoint = endpoint.into();
+        // 使用 lazy channel，避免服务启动时就因规则引擎暂时未就绪而失败。
         let channel = Endpoint::from_shared(endpoint.clone())
             .with_context(|| format!("parse rule engine endpoint {endpoint}"))?
             .tcp_nodelay(true)
@@ -82,7 +95,11 @@ impl TonicRuleEngine {
 
 #[async_trait]
 impl RuleEngine for TonicRuleEngine {
-    async fn validate_action(&self, request: ValidateActionRequest) -> Result<ValidateActionResponse> {
+    async fn validate_action(
+        &self,
+        request: ValidateActionRequest,
+    ) -> Result<ValidateActionResponse> {
+        // 每次调用都克隆一个轻量 client，底层连接池由 tonic channel 复用。
         let mut client = RuleEngineServiceClient::new(self.channel.clone());
         let response = client
             .validate_action(request)
@@ -92,7 +109,11 @@ impl RuleEngine for TonicRuleEngine {
         Ok(response.into_inner())
     }
 
-    async fn calculate_score(&self, request: CalculateScoreRequest) -> Result<CalculateScoreResponse> {
+    async fn calculate_score(
+        &self,
+        request: CalculateScoreRequest,
+    ) -> Result<CalculateScoreResponse> {
+        // 算分与校验共用同一条 channel，便于房间任务在高并发下复用连接池。
         let mut client = RuleEngineServiceClient::new(self.channel.clone());
         let response = client
             .calculate_score(request)
@@ -108,7 +129,11 @@ pub struct NoopRuleEngine;
 
 #[async_trait]
 impl RuleEngine for NoopRuleEngine {
-    async fn validate_action(&self, _request: ValidateActionRequest) -> Result<ValidateActionResponse> {
+    async fn validate_action(
+        &self,
+        _request: ValidateActionRequest,
+    ) -> Result<ValidateActionResponse> {
+        // noop 仅用于本地骨架调试，真实房间逻辑不能依赖它给出的合法性结果。
         Ok(ValidateActionResponse {
             is_legal: true,
             reject_code: engine::ValidationRejectCode::Unspecified as i32,
@@ -120,7 +145,10 @@ impl RuleEngine for NoopRuleEngine {
         })
     }
 
-    async fn calculate_score(&self, _request: CalculateScoreRequest) -> Result<CalculateScoreResponse> {
+    async fn calculate_score(
+        &self,
+        _request: CalculateScoreRequest,
+    ) -> Result<CalculateScoreResponse> {
         Ok(CalculateScoreResponse {
             total_fan: 0,
             fan_details: Vec::new(),
@@ -135,7 +163,9 @@ impl RuleEngine for NoopRuleEngine {
 pub struct MockRuleEngine {
     validate_response: ValidateActionResponse,
     calculate_response: CalculateScoreResponse,
+    // 测试里记录请求快照，方便断言房间循环是否把上下文正确拼给引擎。
     validate_requests: Arc<Mutex<Vec<ValidateActionRequest>>>,
+    calculate_requests: Arc<Mutex<Vec<CalculateScoreRequest>>>,
 }
 
 #[cfg(test)]
@@ -150,13 +180,27 @@ impl MockRuleEngine {
                 settlement_flags: Vec::new(),
             },
             validate_requests: Arc::new(Mutex::new(Vec::new())),
+            calculate_requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
+    pub fn with_calculate_response(mut self, calculate_response: CalculateScoreResponse) -> Self {
+        self.calculate_response = calculate_response;
+        self
+    }
+
+    // 测试读取时返回克隆副本，避免把互斥锁暴露给测试代码。
     pub fn validate_requests(&self) -> Vec<ValidateActionRequest> {
         self.validate_requests
             .lock()
             .expect("validate request lock should not be poisoned")
+            .clone()
+    }
+
+    pub fn calculate_requests(&self) -> Vec<CalculateScoreRequest> {
+        self.calculate_requests
+            .lock()
+            .expect("calculate request lock should not be poisoned")
             .clone()
     }
 }
@@ -164,7 +208,10 @@ impl MockRuleEngine {
 #[cfg(test)]
 #[async_trait]
 impl RuleEngine for MockRuleEngine {
-    async fn validate_action(&self, request: ValidateActionRequest) -> Result<ValidateActionResponse> {
+    async fn validate_action(
+        &self,
+        request: ValidateActionRequest,
+    ) -> Result<ValidateActionResponse> {
         self.validate_requests
             .lock()
             .expect("validate request lock should not be poisoned")
@@ -173,7 +220,15 @@ impl RuleEngine for MockRuleEngine {
         Ok(self.validate_response.clone())
     }
 
-    async fn calculate_score(&self, _request: CalculateScoreRequest) -> Result<CalculateScoreResponse> {
+    async fn calculate_score(
+        &self,
+        _request: CalculateScoreRequest,
+    ) -> Result<CalculateScoreResponse> {
+        self.calculate_requests
+            .lock()
+            .expect("calculate request lock should not be poisoned")
+            .push(_request);
+
         Ok(self.calculate_response.clone())
     }
 }

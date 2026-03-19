@@ -23,6 +23,7 @@ bool IsBlank(const std::string& value) {
   return value.empty();
 }
 
+// Rust 会把四家玩家的公开状态都传过来，但和牌校验只关心当前 actor 的那一份。
 proto::Seat FindActorSeat(
     const proto::ValidateActionRequest& request,
     const proto::EnginePlayerState** actor_state) {
@@ -57,6 +58,7 @@ int SeatToIndex(proto::Seat seat) {
   }
 }
 
+// 把 protobuf 座位映射成上游 GB-Mahjong 使用的风位常量。
 int ProtoSeatToMahjongWind(proto::Seat seat) {
   switch (seat) {
     case proto::SEAT_EAST:
@@ -73,6 +75,7 @@ int ProtoSeatToMahjongWind(proto::Seat seat) {
   }
 }
 
+// protobuf 枚举值与 GB-Mahjong 的 tile id 采用固定偏移映射。
 mahjong::Tile ProtoTileToMahjongTile(proto::Tile tile) {
   if (tile == proto::TILE_UNSPECIFIED || tile == proto::TILE_UNKNOWN) {
     throw std::invalid_argument("tile must not be unspecified or unknown");
@@ -81,6 +84,7 @@ mahjong::Tile ProtoTileToMahjongTile(proto::Tile tile) {
   return mahjong::Tile(static_cast<int>(tile) - 1);
 }
 
+// 把“来源座位”转换成 GB-Mahjong pack 结构需要的相对 offer 值。
 int RelativeOffer(proto::Seat actor_seat, proto::Seat from_seat) {
   const int diff =
       (SeatToIndex(actor_seat) - SeatToIndex(from_seat) + 4) % 4;
@@ -147,6 +151,7 @@ proto::Tile ExtractWinningTile(const proto::CandidateAction& candidate_action) {
 }
 
 void SeedHandtilesTables(mahjong::Handtiles* handtiles) {
+  // 上游库依赖多张计数表，先清零再逐步灌入副露、暗手、花牌。
   for (int tile = TILE_1m; tile < TILE_SIZE; ++tile) {
     handtiles->fulu_table[tile] = 0;
     handtiles->lipai_table[tile] = 0;
@@ -164,6 +169,8 @@ void AddFlower(mahjong::Handtiles* handtiles, proto::Tile tile) {
   handtiles->huapai_table[mahjong_tile.GetId()]++;
 }
 
+// 这里负责把我们的 Meld 表达压成上游库需要的 Pack 结构，
+// 是整个适配层里最容易因为副露编码差异出错的位置之一。
 mahjong::Pack ProtoMeldToMahjongPack(const proto::Meld& meld,
                                      proto::Seat actor_seat) {
   const proto::MeldKind meld_kind = meld.kind();
@@ -256,6 +263,7 @@ bool ContainsSettlementFlag(const proto::CalculateScoreRequest& request,
 
 void PopulateFanDetails(const mahjong::Fan& fan,
                         std::vector<proto::FanDetail>* fan_details) {
+  // 这里把 GB-Mahjong 的内部番种索引翻译成前后端更容易消费的结构。
   for (int fan_index = 1; fan_index < mahjong::FAN_SIZE; ++fan_index) {
     const auto& entries = fan.fan_table_res[fan_index];
     if (entries.empty()) {
@@ -299,6 +307,8 @@ bool HasFan(const mahjong::Fan& fan, int fan_index) {
   return !fan.fan_table_res[fan_index].empty();
 }
 
+// ValidateAction 里的“和牌校验”依赖一份完整 14 张快照；
+// 这里把公开副露、花牌、私有暗手和和牌牌张拼成 GB-Mahjong 可识别的 Handtiles。
 mahjong::Handtiles BuildWinningHandtilesForValidation(
     const proto::ValidateActionRequest& request) {
   const proto::EnginePlayerState* actor_state = nullptr;
@@ -384,6 +394,8 @@ void MoveOneTileToBack(std::vector<mahjong::Tile>* tiles,
   tiles->push_back(selected);
 }
 
+// CalculateScore 需要基于终局亮牌快照重建 Handtiles，
+// 因此与校验路径分开实现，避免混淆“过程态手牌”和“结算态手牌”。
 mahjong::Handtiles BuildWinningHandtilesForScoring(
     const proto::CalculateScoreRequest& request, const proto::HandSnapshot& hand) {
   mahjong::Handtiles handtiles;
@@ -449,6 +461,7 @@ mahjong::Handtiles BuildWinningHandtilesForScoring(
 
 proto::WinningContext BuildWinningContext(const proto::CandidateAction& candidate_action,
                                           const mahjong::Fan& fan) {
+  // 这是“验证阶段的推断上下文”，不是最终房间裁决。
   proto::WinningContext winning_context;
   winning_context.set_win_type(ExtractWinType(candidate_action));
   winning_context.set_winning_tile(ExtractWinningTile(candidate_action));
@@ -550,6 +563,8 @@ GbMahjongAdapter::ValidateOutcome GbMahjongAdapter::ValidateAction(
     outcome.derived_action_type = DeduceActionKind(candidate_action);
 
     if (IsWinningAction(candidate_action)) {
+      // 目前真正交给 GB-Mahjong 严格裁定的是和牌路径；
+      // 非和牌动作仍主要依赖 Rust 房间状态机做上下文合法性控制。
       mahjong::Handtiles handtiles = BuildWinningHandtilesForValidation(request);
       mahjong::Fan fan;
       const bool legal = fan.JudgeHu(handtiles);
@@ -603,6 +618,7 @@ GbMahjongAdapter::ValidateOutcome GbMahjongAdapter::ValidateAction(
 
 GbMahjongAdapter::ScoreOutcome GbMahjongAdapter::CalculateScore(
     const proto::CalculateScoreRequest& request) const {
+  // 进入算分阶段的输入默认已经通过房间状态机确认，只在这里验证“手牌是否真能和”。
   if (!request.has_round_context() || !request.has_rule_config()) {
     throw std::invalid_argument(
         "CalculateScoreRequest requires round_context and rule_config");

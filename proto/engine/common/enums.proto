@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package gb_mahjong.engine.v1;
 
+// 座位枚举，同时也用于表达风位。
 enum Seat {
   SEAT_UNSPECIFIED = 0;
   SEAT_EAST = 1;
@@ -10,6 +11,7 @@ enum Seat {
   SEAT_NORTH = 4;
 }
 
+// 牌枚举。引擎侧也保留 TILE_UNKNOWN，便于处理隐藏信息占位。
 enum Tile {
   TILE_UNSPECIFIED = 0;
   TILE_UNKNOWN = 1;
@@ -64,6 +66,7 @@ enum Tile {
   TILE_SEASON_WINTER = 43;
 }
 
+// 引擎内部识别的动作类型。
 enum ActionKind {
   ACTION_KIND_UNSPECIFIED = 0;
   ACTION_KIND_DRAW = 1;
@@ -78,6 +81,7 @@ enum ActionKind {
   ACTION_KIND_REPLACE_FLOWER = 10;
 }
 
+// 基于他人公开动作发起的声明类型。
 enum ClaimKind {
   CLAIM_KIND_UNSPECIFIED = 0;
   CLAIM_KIND_CHI = 1;
@@ -87,6 +91,7 @@ enum ClaimKind {
   CLAIM_KIND_ROB_KONG_WIN = 5;
 }
 
+// 和牌类型。
 enum WinType {
   WIN_TYPE_UNSPECIFIED = 0;
   WIN_TYPE_SELF_DRAW = 1;
@@ -95,6 +100,7 @@ enum WinType {
   WIN_TYPE_KONG_DRAW = 4;
 }
 
+// 副露类型。
 enum MeldKind {
   MELD_KIND_UNSPECIFIED = 0;
   MELD_KIND_CHI = 1;
@@ -104,6 +110,7 @@ enum MeldKind {
   MELD_KIND_SUPPLEMENTAL_KONG = 5;
 }
 
+// 动作校验失败原因。
 enum ValidationRejectCode {
   VALIDATION_REJECT_CODE_UNSPECIFIED = 0;
   VALIDATION_REJECT_CODE_INVALID_CONTEXT = 1;
@@ -116,6 +123,7 @@ enum ValidationRejectCode {
   VALIDATION_REJECT_CODE_INTERNAL_ERROR = 8;
 }
 
+// 结算附加标签。
 enum SettlementFlag {
   SETTLEMENT_FLAG_UNSPECIFIED = 0;
   SETTLEMENT_FLAG_SELF_DRAW = 1;

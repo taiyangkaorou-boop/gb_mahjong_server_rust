@@ -4,13 +4,21 @@ package gb_mahjong.client.v1;
 
 import "client/common/enums.proto";
 
+// 客户端提交的玩家动作。
+// expected_event_seq 和 action_window_id 用于防止客户端在过期状态上误操作。
 message PlayerActionRequest {
+  // 目标房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 当前小局 ID。
   string round_id = 3;
+  // 客户端认为自己操作所基于的最新事件号。
   uint64 expected_event_seq = 4;
+  // 若动作来自某个抢操作窗口，则填写对应窗口 ID；普通出牌可为 0。
   uint64 action_window_id = 5;
 
+  // 具体动作内容。
   oneof action {
     DiscardAction discard = 10;
     ClaimAction claim = 11;
@@ -21,34 +29,54 @@ message PlayerActionRequest {
   }
 }
 
+// 出牌动作。
 message DiscardAction {
+  // 要打出的牌。
   Tile tile = 1;
+  // 是否为摸到即打出。
   bool tsumogiri = 2;
 }
 
+// 吃/碰/明杠/抢杠胡等基于他人公开动作的声明。
 message ClaimAction {
+  // 声明的抢操作类型。
   ClaimKind claim_kind = 1;
+  // 目标牌，即别人刚公开的那张牌。
   Tile target_tile = 2;
+  // 为完成这次吃碰杠需要从自己手里消耗的牌。
   repeated Tile consume_tiles = 3;
+  // 目标牌来源座位。
   Seat source_seat = 4;
+  // 目标牌来源事件号。
   uint64 source_event_seq = 5;
 }
 
+// 和牌声明。
 message DeclareWinAction {
+  // 和牌类型，例如自摸、点和、抢杠胡。
   WinType win_type = 1;
+  // 和牌所依赖的那张牌。
   Tile winning_tile = 2;
+  // 该牌来源座位；自摸时通常与自己一致或由服务端约定处理。
   Seat source_seat = 3;
+  // 对应来源事件号。
   uint64 source_event_seq = 4;
 }
 
+// 放弃本次抢操作窗口。
 message PassAction {
+  // 放弃的是哪一个来源事件触发的窗口。
   uint64 source_event_seq = 1;
 }
 
+// 加杠动作。
 message SupplementalKongAction {
+  // 要从碰牌升级成加杠的牌。
   Tile tile = 1;
 }
 
+// 托管开关。
 message AutoPlayToggleAction {
+  // true 表示开启托管，false 表示关闭托管。
   bool enabled = 1;
 }

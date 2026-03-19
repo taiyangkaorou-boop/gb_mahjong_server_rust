@@ -6,14 +6,18 @@ option java_multiple_files = true;
 option java_package = "com.gbmahjong.engine.v1";
 option csharp_namespace = "GbMahjong.Engine.V1";
 
+// 内部规则引擎协议根入口文件。
+// Rust 游戏服与 C++ 规则引擎通过这份 schema 做 gRPC 通信。
 import public "engine/common/enums.proto";
 import public "engine/common/types.proto";
 import public "engine/validation.proto";
 import public "engine/scoring.proto";
 
-// Keep the gRPC service in the root entry file so C++ generation continues to
-// produce internal_engine.grpc.pb.h as the stable include surface.
+// gRPC service 暂时保留在根入口文件中，
+// 这样 C++ 侧仍会生成稳定的 internal_engine.grpc.pb.h 头文件名。
 service RuleEngineService {
+  // 校验一个候选动作在当前牌局上下文里是否允许执行。
   rpc ValidateAction(ValidateActionRequest) returns (ValidateActionResponse);
+  // 对已经确定的终局结果做算番和分数增减计算。
   rpc CalculateScore(CalculateScoreRequest) returns (CalculateScoreResponse);
 }

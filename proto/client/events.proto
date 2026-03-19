@@ -6,33 +6,57 @@ import "client/actions.proto";
 import "client/common/enums.proto";
 import "client/common/types.proto";
 
+// 面向单个玩家的操作提示。
 message ActionPrompt {
+  // 房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 当前小局 ID。
   string round_id = 3;
+  // 发送该提示时对应的事件号。
   uint64 event_seq = 4;
+  // 所属抢操作窗口 ID。
   uint64 action_window_id = 5;
+  // 当前被提示的玩家座位。
   Seat actor_seat = 6;
+  // 该玩家当前可执行的选项。
   repeated PromptOption options = 7;
+  // 该提示失效时间。
   uint64 deadline_unix_ms = 8;
 }
 
+// 面向房间内玩家的动作广播。
 message ActionBroadcast {
+  // 房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 当前小局 ID。
   string round_id = 3;
+  // 该动作广播的事件号。
   uint64 event_seq = 4;
+  // 动作发起座位。
   Seat actor_seat = 5;
+  // 归一化后的动作类型。
   ActionKind action_kind = 6;
+  // 动作明细。
   ActionDetail action_detail = 7;
+  // 应用动作后产生的附带效果列表。
   repeated ResultingEffect resulting_effects = 8;
+  // 动作落地后房间所处阶段。
   GamePhase resulting_phase = 9;
+  // 动作落地后下一位轮到的座位。
   Seat next_turn_seat = 10;
+  // 动作落地后剩余活牌墙张数。
   uint32 wall_tiles_remaining = 11;
+  // 若动作后打开新窗口，对应的截止时间。
   uint64 action_deadline_unix_ms = 12;
 }
 
+// 动作细节载荷。
 message ActionDetail {
+  // 不同动作共用一层广播头，具体细节落在 oneof 内。
   oneof detail {
     DrawDetail draw = 1;
     DiscardAction discard = 2;
@@ -47,37 +71,59 @@ message ActionDetail {
   }
 }
 
+// 摸牌细节。
 message DrawDetail {
+  // 摸到的牌。若当前接收者无权得知，则可能为 TILE_UNKNOWN。
   Tile tile = 1;
+  // 这张牌对当前接收者是否可见。
   bool visible_to_recipient = 2;
+  // 是否为补花或杠后补摸。
   bool replacement_draw = 3;
 }
 
+// 已经裁定完成的吃碰杠结果。
 message ResolvedClaim {
+  // 抢操作类型。
   ClaimKind claim_kind = 1;
+  // 被声明的目标牌。
   Tile target_tile = 2;
+  // 当前玩家消耗掉的手牌。
   repeated Tile consume_tiles = 3;
+  // 目标牌来源座位。
   Seat source_seat = 4;
+  // 最终形成的副露。
   Meld resulting_meld = 5;
 }
 
+// 补花细节。
 message FlowerReplacementDetail {
+  // 本次亮出的花牌。
   repeated Tile flowers_revealed = 1;
+  // 因这些花牌触发的补摸次数。
   uint32 replacement_draws = 2;
 }
 
+// 状态变化细节。
 message StatusChangeDetail {
+  // 是否处于 ready 状态。
   bool ready = 1;
+  // 是否开启托管。
   bool auto_play_enabled = 2;
+  // 变化后的玩家状态。
   PlayerStatus new_status = 3;
 }
 
+// 阶段变化细节。
 message PhaseChangeDetail {
+  // 切换后的阶段。
   GamePhase phase = 1;
+  // 若切到新一局，对应的新 round_id。
   string round_id = 2;
 }
 
+// 动作落地后的附带效果。
 message ResultingEffect {
+  // 不同效果类型共用 oneof 表达。
   oneof effect {
     HandCountDelta hand_count_delta = 1;
     ScoreDelta score_delta = 2;
@@ -89,37 +135,58 @@ message ResultingEffect {
   }
 }
 
+// 某个玩家暗手数量变化。
 message HandCountDelta {
+  // 对应座位。
   Seat seat = 1;
+  // 更新后的暗手张数。
   uint32 concealed_tile_count = 2;
 }
 
+// 某个玩家分数变化。
 message ScoreDelta {
+  // 对应座位。
   Seat seat = 1;
+  // 分数增减。
   int64 delta = 2;
+  // 变化后的总分。
   int64 new_total = 3;
 }
 
+// 轮到下一位操作。
 message TurnAdvanced {
+  // 下一位行动者座位。
   Seat next_turn_seat = 1;
+  // 推进后所处阶段。
   GamePhase resulting_phase = 2;
 }
 
+// 新增副露效果。
 message MeldAdded {
+  // 产生副露的座位。
   Seat seat = 1;
+  // 新增的副露内容。
   Meld meld = 2;
 }
 
+// 新增弃牌效果。
 message DiscardAdded {
+  // 产生弃牌的座位。
   Seat seat = 1;
+  // 新增的弃牌记录。
   DiscardTile discard = 2;
 }
 
+// 新增花牌效果。
 message FlowerAdded {
+  // 亮出花牌的座位。
   Seat seat = 1;
+  // 新增的花牌。
   repeated Tile flowers = 2;
 }
 
+// 打开一个新的抢操作窗口。
 message PromptOpened {
+  // 新窗口的完整信息。
   ClaimWindow claim_window = 1;
 }

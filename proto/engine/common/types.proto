@@ -4,114 +4,195 @@ package gb_mahjong.engine.v1;
 
 import "engine/common/enums.proto";
 
+// 规则配置快照。
 message RuleConfig {
+  // 规则集标识。
   string ruleset_id = 1;
+  // 座位数。
   uint32 seat_count = 2;
+  // 是否启用花牌。
   bool enable_flower_tiles = 3;
+  // 是否允许抢杠胡。
   bool enable_robbing_kong = 4;
+  // 是否允许杠上开花。
   bool enable_kong_draw = 5;
+  // 是否启用海底等最后一张加成判断。
   bool enable_last_tile_bonus = 6;
+  // 基础分或底分配置。
   uint32 base_points = 7;
 }
 
+// 当前局面上下文。
 message RoundContext {
+  // 当前圈风。
   Seat prevailing_wind = 1;
+  // 当前庄位。
   Seat dealer_seat = 2;
+  // 当前轮到行动的座位。
   Seat current_turn_seat = 3;
+  // 第几手牌。
   uint32 hand_number = 4;
+  // 连庄次数。
   uint32 dealer_streak = 5;
+  // 活牌墙剩余张数。
   uint32 wall_tiles_remaining = 6;
+  // 死牌墙剩余张数。
   uint32 dead_wall_tiles_remaining = 7;
+  // 是否正等待补花/补杠后的补摸。
   bool replacement_draw_pending = 8;
+  // 当前是否已进入海底最后一张语义。
   bool is_last_tile = 9;
 }
 
+// 公开副露。
 message Meld {
+  // 副露类型。
   MeldKind kind = 1;
+  // 组成该副露的全部牌。
   repeated Tile tiles = 2;
+  // 目标牌来源座位。
   Seat from_seat = 3;
+  // 被声明的目标牌。
   Tile claimed_tile = 4;
+  // 是否为暗杠等隐藏来源的副露。
   bool concealed = 5;
+  // 形成该副露的来源事件号。
   uint64 source_event_seq = 6;
 }
 
+// 弃牌河中的单张记录。
 message DiscardTile {
+  // 被打出的牌。
   Tile tile = 1;
+  // 出现在第几轮出牌中。
   uint32 turn_index = 2;
+  // 是否已被后续吃碰杠胡。
   bool claimed = 3;
+  // 是否为摸切。
   bool drawn_and_discarded = 4;
+  // 产生该弃牌的来源事件号。
   uint64 source_event_seq = 5;
 }
 
+// 某个玩家对引擎公开可见的状态。
 message EnginePlayerState {
+  // 玩家座位。
   Seat seat = 1;
+  // 当前分数。
   int64 current_score = 2;
+  // 暗牌数量。这里只给张数，不暴露具体内容。
   uint32 concealed_tile_count = 3;
+  // 已公开的副露。
   repeated Meld melds = 4;
+  // 弃牌河。
   repeated DiscardTile discards = 5;
+  // 花牌。
   repeated Tile flowers = 6;
 }
 
+// 当前操作者私有可见的暗手信息。
 message PrivateHandContext {
+  // 完整暗手。
   repeated Tile concealed_tiles = 1;
+  // 刚摸到但尚未并入排序的牌；没有则为默认值。
   Tile drawn_tile = 2;
 }
 
+// 最近一次已落地动作的上下文。
 message RecentActionContext {
+  // 来源事件号。
   uint64 source_event_seq = 1;
+  // 来源座位。
   Seat source_seat = 2;
+  // 来源动作类型。
   ActionKind source_action_kind = 3;
+  // 来源动作涉及的关键牌。
   Tile source_tile = 4;
+  // 是否由补摸触发。
   bool replacement_draw = 5;
+  // 是否处于可抢杠的候选场景。
   bool rob_kong_candidate = 6;
 }
 
+// 当前抢操作窗口的全局上下文。
 message ClaimWindowContext {
+  // 窗口 ID。
   uint64 action_window_id = 1;
+  // 触发窗口的来源事件号。
   uint64 source_event_seq = 2;
+  // 触发窗口的来源座位。
   Seat source_seat = 3;
+  // 当前窗口围绕的目标牌。
   Tile target_tile = 4;
+  // 打开窗口的触发动作。
   ActionKind trigger_action_kind = 5;
+  // 所有有资格响应的座位。
   repeated Seat eligible_seats = 6;
 }
 
+// 出牌候选动作。
 message DiscardAction {
+  // 要打出的牌。
   Tile tile = 1;
+  // 是否为摸切。
   bool tsumogiri = 2;
 }
 
+// 吃/碰/明杠/抢杠胡等候选动作。
 message ClaimAction {
+  // 抢操作类型。
   ClaimKind claim_kind = 1;
+  // 目标牌。
   Tile target_tile = 2;
+  // 需要从自己手里消耗的牌。
   repeated Tile consume_tiles = 3;
+  // 目标牌来源座位。
   Seat source_seat = 4;
+  // 来源事件号。
   uint64 source_event_seq = 5;
 }
 
+// 和牌候选动作。
 message DeclareWinAction {
+  // 和牌类型。
   WinType win_type = 1;
+  // 和牌所依赖的牌。
   Tile winning_tile = 2;
+  // 该牌来源座位。
   Seat source_seat = 3;
+  // 来源事件号。
   uint64 source_event_seq = 4;
 }
 
+// 放弃候选动作。
 message PassAction {
+  // 放弃的是哪个来源事件触发的窗口。
   uint64 source_event_seq = 1;
 }
 
+// 杠相关候选动作。
 message KongAction {
+  // 杠类型，常见为明杠、暗杠、加杠。
   ActionKind kong_kind = 1;
+  // 杠所围绕的牌。
   Tile tile = 2;
+  // 需要从手里消耗的牌。
   repeated Tile consume_tiles = 3;
+  // 牌来源座位。
   Seat source_seat = 4;
+  // 来源事件号。
   uint64 source_event_seq = 5;
 }
 
+// 补花候选动作。
 message ReplaceFlowerAction {
+  // 本次需要被替换出去的花牌。
   repeated Tile flowers = 1;
 }
 
+// 引擎待校验的候选动作。
 message CandidateAction {
+  // 具体候选动作。
   oneof action {
     DiscardAction discard = 1;
     ClaimAction claim = 2;
@@ -122,48 +203,82 @@ message CandidateAction {
   }
 }
 
+// 校验通过后，引擎可返回的副露落地结果。
 message MeldResult {
+  // 形成的副露。
   Meld meld = 1;
+  // 实际消耗的牌。
   repeated Tile consumed_tiles = 2;
+  // 目标牌。
   Tile target_tile = 3;
 }
 
+// 番型明细。
 message FanDetail {
+  // 程序内部代码。
   string fan_code = 1;
+  // 番型名称。
   string fan_name = 2;
+  // 单次番值。
   uint32 fan_value = 3;
+  // 重复次数。
   uint32 count = 4;
+  // 面向调用方的描述。
   string description = 5;
 }
 
+// 和牌上下文。
 message WinningContext {
+  // 和牌类型。
   WinType win_type = 1;
+  // 和牌牌张。
   Tile winning_tile = 2;
+  // 是否满足普通四面子一雀头。
   bool completes_standard_hand = 3;
+  // 是否满足七对。
   bool completes_seven_pairs = 4;
+  // 是否满足十三幺。
   bool completes_thirteen_orphans = 5;
+  // 初步番型明细。
   repeated FanDetail tentative_fan_details = 6;
+  // 初步总番数。
   uint32 tentative_total_fan = 7;
 }
 
+// 引擎给调用方的后续动作建议。
 message SuggestedFollowUp {
+  // 建议动作大类。
   ActionKind action_kind = 1;
+  // 若是抢操作，对应子类型。
   ClaimKind claim_kind = 2;
+  // 与建议动作相关的牌集合。
   repeated Tile tiles = 3;
 }
 
+// 终局时单个玩家的完整手牌快照。
 message HandSnapshot {
+  // 玩家座位。
   Seat seat = 1;
+  // 亮开的暗手。
   repeated Tile concealed_tiles = 2;
+  // 副露。
   repeated Meld melds = 3;
+  // 花牌。
   repeated Tile flowers = 4;
+  // 结算前分数。
   int64 current_score = 5;
+  // 是否为赢家。
   bool winner = 6;
+  // 是否为放铳者。
   bool discarder = 7;
 }
 
+// 单个座位的分数变化结果。
 message SeatScoreDelta {
+  // 玩家座位。
   Seat seat = 1;
+  // 本局分数增减。
   int64 delta = 2;
+  // 结算后总分。
   int64 final_total = 3;
 }

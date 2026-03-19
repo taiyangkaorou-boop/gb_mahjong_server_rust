@@ -5,27 +5,48 @@ package gb_mahjong.client.v1;
 import "client/common/enums.proto";
 import "client/common/types.proto";
 
+// 单局结算。
 message RoundSettlement {
+  // 房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 当前小局 ID。
   string round_id = 3;
+  // 本局圈风。
   Seat prevailing_wind = 4;
+  // 第几手牌。
   uint32 hand_number = 5;
+  // 本局庄家。
   Seat dealer_seat = 6;
+  // 和牌类型。
   WinType win_type = 7;
+  // 赢家座位。
   Seat winner_seat = 8;
+  // 放铳者座位；自摸或流局时可为默认值。
   Seat discarder_seat = 9;
+  // 和牌牌张。
   Tile winning_tile = 10;
+  // 每位玩家的分数变化结果。
   repeated RoundPlayerResult player_results = 11;
+  // 番型明细。
   repeated FanDetail fan_details = 12;
+  // 需要公开展示的手牌。
   repeated RevealedHand revealed_hands = 13;
+  // 本局特殊标签。
   repeated SettlementFlag settlement_flags = 14;
+  // 结算时剩余牌墙张数。
   uint32 wall_tiles_remaining = 15;
 }
 
+// 整场结算。
 message MatchSettlement {
+  // 房间 ID。
   string room_id = 1;
+  // 对局 ID。
   string match_id = 2;
+  // 最终排名列表。
   repeated FinalStanding standings = 3;
+  // 整场结束时间。
   uint64 finished_at_unix_ms = 4;
 }

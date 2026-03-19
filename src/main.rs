@@ -1,5 +1,9 @@
 mod app;
+mod auth;
+mod db;
 mod engine;
+mod http;
+mod lobby;
 mod proto;
 mod room;
 mod ws;
@@ -8,21 +12,32 @@ use std::{env, net::SocketAddr};
 
 use anyhow::Context;
 use app::{build_router, AppState};
+use auth::AuthService;
 use engine::{RuleEngineHandle, DEFAULT_RULE_ENGINE_ENDPOINT};
+use lobby::LobbyService;
 use room::RoomManager;
 use tokio::{net::TcpListener, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 启动流程保持单向依赖：
+    // 日志 -> 规则引擎句柄 -> AppState -> Router -> TCP 监听。
     init_tracing();
 
+    // 游戏服本身不做规则计算，只保留一个可复用的 gRPC 客户端句柄，
+    // 由各个房间任务在需要时异步调用规则引擎。
     let rule_engine_endpoint = resolve_rule_engine_endpoint();
     let rule_engine = RuleEngineHandle::tonic(rule_engine_endpoint.clone())
         .with_context(|| format!("configure rule engine client for {rule_engine_endpoint}"))?;
-    let state = AppState::with_room_manager(RoomManager::with_rule_engine(rule_engine));
+    let state = AppState::new(
+        RoomManager::with_rule_engine(rule_engine),
+        AuthService::default(),
+        LobbyService::default(),
+    );
     let app = build_router(state);
 
+    // 默认监听 18080，避免和机器上常见的 8080 开发服务冲突。
     let listen_addr = resolve_listen_addr().context("resolve listen address")?;
     let listener = TcpListener::bind(listen_addr)
         .await
@@ -39,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn init_tracing() {
+    // 本地开发默认打开较详细日志，线上可用 RUST_LOG 覆盖。
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,gb_mahjong_server_rust=debug"));
 
@@ -49,6 +65,7 @@ fn init_tracing() {
 }
 
 async fn shutdown_signal() {
+    // 同时监听 Ctrl-C 和 SIGTERM，便于本地开发与容器环境都能优雅停机。
     let ctrl_c = async {
         if let Err(error) = signal::ctrl_c().await {
             tracing::error!(?error, "failed to install ctrl-c handler");
@@ -81,6 +98,7 @@ async fn shutdown_signal() {
 }
 
 fn resolve_listen_addr() -> anyhow::Result<SocketAddr> {
+    // 监听地址统一由环境变量驱动，便于本地、测试和部署环境复用同一套二进制。
     let host = env::var("GB_MAHJONG_HOST").unwrap_or_else(|_| "0.0.0.0".to_owned());
 
     let port = match env::var("GB_MAHJONG_PORT") {
@@ -99,6 +117,7 @@ fn resolve_listen_addr() -> anyhow::Result<SocketAddr> {
 }
 
 fn resolve_rule_engine_endpoint() -> String {
+    // 规则引擎地址独立配置，方便把 C++ 服务部署到单独进程或独立机器。
     env::var("GB_MAHJONG_ENGINE_ENDPOINT")
         .unwrap_or_else(|_| DEFAULT_RULE_ENGINE_ENDPOINT.to_owned())
 }

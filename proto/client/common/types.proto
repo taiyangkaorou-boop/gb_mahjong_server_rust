@@ -4,130 +4,231 @@ package gb_mahjong.client.v1;
 
 import "client/common/enums.proto";
 
+// 房间规则配置。
 message RoomConfig {
+  // 规则集标识，用于区分未来的玩法变体。
   string ruleset_id = 1;
+  // 固定座位数，当前国标麻将为 4。
   uint32 seat_count = 2;
+  // 是否启用花牌。
   bool enable_flower_tiles = 3;
+  // 是否允许抢杠胡。
   bool enable_robbing_kong = 4;
+  // 是否允许杠上开花。
   bool enable_kong_draw = 5;
+  // 断线保留座位的宽限秒数。
   uint32 reconnect_grace_seconds = 6;
+  // 客户端操作超时时间。
   uint32 action_timeout_ms = 7;
 }
 
+// 服务端下发的完整快照。
 message SyncState {
+  // 房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 当前小局 ID。
   string round_id = 3;
+  // 触发本次同步的原因。
   SyncReason reason = 4;
+  // 服务端生成快照时的时间戳。
   uint64 server_time_ms = 5;
+  // 对局快照主体。
   GameSnapshot snapshot = 6;
 }
 
+// 对局快照主体。
 message GameSnapshot {
+  // 房间规则配置。
   RoomConfig room_config = 1;
+  // 当前主阶段。
   GamePhase phase = 2;
+  // 接收这个快照的玩家自己所处座位。
   Seat self_seat = 3;
+  // 当前圈风。
   Seat prevailing_wind = 4;
+  // 当前庄家座位。
   Seat dealer_seat = 5;
+  // 当前轮到操作的座位。
   Seat current_turn_seat = 6;
+  // 第几手牌。
   uint32 hand_number = 7;
+  // 连庄次数。
   uint32 dealer_streak = 8;
+  // 活牌墙剩余张数。
   uint32 wall_tiles_remaining = 9;
+  // 死牌墙剩余张数。
   uint32 dead_wall_tiles_remaining = 10;
+  // 快照对应的最新事件号。
   uint64 latest_event_seq = 11;
+  // 所有玩家的公开状态。
   repeated PlayerState players = 12;
+  // 仅对接收者自己可见的暗手信息。
   SelfHandState self_hand = 13;
+  // 当前活跃的抢操作窗口；若无则为空。
   ClaimWindow active_claim_window = 14;
+  // 当前窗口或当前回合操作截止时间。
   uint64 action_deadline_unix_ms = 15;
 }
 
+// 单个玩家的公开状态。
 message PlayerState {
+  // 业务用户 ID。
   string user_id = 1;
+  // 展示昵称。
   string display_name = 2;
+  // 玩家座位。
   Seat seat = 3;
+  // 玩家当前状态。
   PlayerStatus status = 4;
+  // 当前总分。
   int64 score = 5;
+  // 是否为本局庄家。
   bool is_dealer = 6;
+  // 当前连接是否在线。
   bool is_connected = 7;
+  // 是否开启托管。
   bool auto_play_enabled = 8;
+  // 暗牌数量。这里只公开张数，不公开具体牌面。
   uint32 concealed_tile_count = 9;
+  // 已公开的副露。
   repeated Meld melds = 10;
+  // 弃牌河。
   repeated DiscardTile discards = 11;
+  // 已亮出的花牌。
   repeated Tile flowers = 12;
+  // 因补花等产生的补摸次数。
   uint32 replacement_draw_count = 13;
 }
 
+// 接收者自己的暗手状态。
 message SelfHandState {
+  // 接收者自己完整的暗手。
   repeated Tile concealed_tiles = 1;
+  // 当前刚摸到、尚未并入暗手排序的那张牌；没有则为默认值。
   Tile drawn_tile = 2;
 }
 
+// 副露信息。
 message Meld {
+  // 副露类型。
   MeldKind kind = 1;
+  // 组成该副露的全部牌。
   repeated Tile tiles = 2;
+  // 被吃/碰/杠的牌来源座位。
   Seat from_seat = 3;
+  // 被声明的目标牌。
   Tile claimed_tile = 4;
+  // 是否为暗杠等“对别人不可见来源过程”的副露。
   bool concealed = 5;
+  // 产生该副露的来源事件号。
   uint64 source_event_seq = 6;
 }
 
+// 弃牌河中的单张记录。
 message DiscardTile {
+  // 打出的牌。
   Tile tile = 1;
+  // 它出现在第几轮出牌中。
   uint32 turn_index = 2;
+  // 是否已被别人吃碰杠胡利用。
   bool claimed = 3;
+  // 是否为摸切。
   bool drawn_and_discarded = 4;
+  // 产生这张弃牌的事件号。
   uint64 source_event_seq = 5;
 }
 
-// In SyncState, options are scoped to the recipient. Eligible seats are global.
+// 抢操作窗口。
+// 在 SyncState 里，options 只面向当前接收者裁剪；eligible_seats 则是全局可响应座位列表。
 message ClaimWindow {
+  // 窗口唯一编号。
   uint64 action_window_id = 1;
+  // 触发该窗口的来源事件号。
   uint64 source_event_seq = 2;
+  // 触发该窗口的来源座位。
   Seat source_seat = 3;
+  // 本次窗口围绕的目标牌。
   Tile target_tile = 4;
+  // 触发窗口的动作类型，例如 discard 或 supplemental_kong。
   ActionKind trigger_action_kind = 5;
+  // 从全局视角看，哪些座位有资格响应。
   repeated Seat eligible_seats = 6;
+  // 当前接收者可见、可操作的选项列表。
   repeated PromptOption options = 7;
+  // 本次窗口超时时间。
   uint64 deadline_unix_ms = 8;
 }
 
+// 单个可操作选项。
 message PromptOption {
+  // 客户端本地可用的选项标识。
   string option_id = 1;
+  // 归一化后的动作类型。
   ActionKind action_kind = 2;
+  // 若是吃碰杠类操作，对应的 claim 子类型。
   ClaimKind claim_kind = 3;
+  // 若是和牌，对应的和牌类型。
   WinType win_type = 4;
+  // 可供客户端展示的候选牌集合。
   repeated Tile candidate_tiles = 5;
+  // 若执行该操作，需要消耗的自有牌。
   repeated Tile consume_tiles = 6;
 }
 
+// 单个玩家在一局结算中的结果。
 message RoundPlayerResult {
+  // 玩家座位。
   Seat seat = 1;
+  // 本局分数变化。
   int64 round_delta = 2;
+  // 结算后总分。
   int64 total_score_after = 3;
 }
 
+// 番型明细。
 message FanDetail {
+  // 程序内部使用的番型代码。
   string fan_code = 1;
+  // 中文番型名。
   string fan_name = 2;
+  // 单次计番值。
   uint32 fan_value = 3;
+  // 出现次数。
   uint32 count = 4;
+  // 面向客户端展示的说明。
   string description = 5;
 }
 
+// 结算阶段公开展示的手牌信息。
 message RevealedHand {
+  // 玩家座位。
   Seat seat = 1;
+  // 结算时亮出的暗手。
   repeated Tile concealed_tiles = 2;
+  // 公开副露。
   repeated Meld melds = 3;
+  // 已公开花牌。
   repeated Tile flowers = 4;
+  // 是否为本局赢家。
   bool winner = 5;
 }
 
+// 整场最终排名。
 message FinalStanding {
+  // 玩家座位。
   Seat seat = 1;
+  // 业务用户 ID。
   string user_id = 2;
+  // 展示昵称。
   string display_name = 3;
+  // 最终总分。
   int64 final_score = 4;
+  // 排名。
   uint32 rank = 5;
+  // 胜出的局数。
   uint32 rounds_won = 6;
+  // 自摸次数。
   uint32 self_draw_wins = 7;
 }

@@ -17,6 +17,7 @@ RuleEngineServiceImpl::RuleEngineServiceImpl(
     proto::ValidateActionResponse* response) {
   (void)context;
 
+  // service 层尽量保持“薄”，把 protobuf <-> 领域逻辑的桥接交给 adapter。
   const GbMahjongAdapter::ValidateOutcome outcome =
       adapter_->ValidateAction(*request);
 
@@ -51,6 +52,8 @@ RuleEngineServiceImpl::RuleEngineServiceImpl(
     proto::CalculateScoreResponse* response) {
   (void)context;
 
+  // service 层不自行吞掉异常含义，而是尽量把输入错误/内部错误映射回 gRPC 状态码。
+  // 算分阶段对输入完整性要求更高，因此这里把 adapter 抛出的参数错误映射成 INVALID_ARGUMENT。
   GbMahjongAdapter::ScoreOutcome outcome;
   try {
     outcome = adapter_->CalculateScore(*request);

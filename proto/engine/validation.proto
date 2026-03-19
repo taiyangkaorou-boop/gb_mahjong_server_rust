@@ -5,27 +5,48 @@ package gb_mahjong.engine.v1;
 import "engine/common/enums.proto";
 import "engine/common/types.proto";
 
+// 动作合法性校验请求。
 message ValidateActionRequest {
+  // 房间 ID。
   string room_id = 1;
+  // 对局 ID。
   string match_id = 2;
+  // 小局 ID。
   string round_id = 3;
+  // 服务端当前事件号，用于帮助引擎定位时序上下文。
   uint64 server_event_seq = 4;
+  // 规则配置快照。
   RuleConfig rule_config = 5;
+  // 当前局面上下文。
   RoundContext round_context = 6;
+  // 当前尝试执行动作的座位。
   Seat actor_seat = 7;
+  // 待校验的候选动作。
   CandidateAction candidate_action = 8;
+  // 最近一次已确认落地的动作。
   RecentActionContext recent_action = 9;
+  // 所有玩家的公开状态。
   repeated EnginePlayerState players = 10;
+  // 当前操作者自己的暗手上下文。
   PrivateHandContext actor_private_hand = 11;
+  // 若动作发生在抢操作窗口中，这里带上窗口上下文。
   ClaimWindowContext claim_window = 12;
 }
 
+// 动作合法性校验响应。
 message ValidateActionResponse {
+  // 动作是否合法。
   bool is_legal = 1;
+  // 不合法时的拒绝原因。
   ValidationRejectCode reject_code = 2;
+  // 引擎归一化后的动作类型。
   ActionKind derived_action_type = 3;
+  // 若动作会形成副露，这里返回副露结果。
   MeldResult meld_result = 4;
+  // 若动作是和牌，这里返回和牌上下文。
   WinningContext winning_context = 5;
+  // 可选的后续动作建议。
   repeated SuggestedFollowUp suggested_follow_ups = 6;
+  // 面向调用方的解释说明。
   string explanation = 7;
 }

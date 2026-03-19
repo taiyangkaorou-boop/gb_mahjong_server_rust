@@ -5,24 +5,42 @@ package gb_mahjong.engine.v1;
 import "engine/common/enums.proto";
 import "engine/common/types.proto";
 
+// 终局算番/算分请求。
 message CalculateScoreRequest {
+  // 房间 ID。
   string room_id = 1;
+  // 对局 ID。
   string match_id = 2;
+  // 小局 ID。
   string round_id = 3;
+  // 规则配置快照。
   RuleConfig rule_config = 4;
+  // 当前局面上下文。
   RoundContext round_context = 5;
+  // 本次和牌类型。
   WinType win_type = 6;
+  // 赢家座位。
   Seat winner_seat = 7;
+  // 放铳者座位；自摸时可为默认值。
   Seat discarder_seat = 8;
+  // 和牌牌张。
   Tile winning_tile = 9;
+  // 所有玩家的终局手牌快照。
   repeated HandSnapshot hands = 10;
+  // 本局生效的附加结算标签。
   repeated SettlementFlag settlement_flags = 11;
+  // 触发本次终局的最后一个动作。
   RecentActionContext terminal_action = 12;
 }
 
+// 终局算番/算分响应。
 message CalculateScoreResponse {
+  // 总番数。
   uint32 total_fan = 1;
+  // 番型明细。
   repeated FanDetail fan_details = 2;
+  // 各座位分数变化结果。
   repeated SeatScoreDelta score_delta_by_seat = 3;
+  // 最终确认的结算标签。
   repeated SettlementFlag settlement_flags = 4;
 }

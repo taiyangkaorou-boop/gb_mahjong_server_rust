@@ -8,9 +8,13 @@ import "client/common/types.proto";
 import "client/events.proto";
 import "client/settlement.proto";
 
+// 客户端 -> 服务端的统一顶层封包。
+// request_id 由客户端生成，用于把异步响应和本地操作对应起来。
 message ClientFrame {
+  // 客户端请求流水号，服务端会在需要时原样带回。
   string request_id = 1;
 
+  // 具体业务负载。
   oneof payload {
     JoinRoomRequest join_room = 10;
     ReadyRequest ready = 11;
@@ -20,9 +24,13 @@ message ClientFrame {
   }
 }
 
+// 服务端 -> 客户端的统一顶层封包。
+// event_seq 是服务端事件顺序号，也是断线重连时最重要的时序依据。
 message ServerFrame {
+  // 当前消息在服务端视角下的全局顺序号。
   uint64 event_seq = 1;
 
+  // 具体业务负载。
   oneof payload {
     JoinRoomResponse join_room = 10;
     SyncState sync_state = 11;
@@ -36,66 +44,114 @@ message ServerFrame {
   }
 }
 
+// 进入房间请求。
 message JoinRoomRequest {
+  // 目标房间 ID。
   string room_id = 1;
+  // 业务用户 ID。
   string user_id = 2;
+  // 业务层会话令牌，供服务端鉴权预留。
   string session_token = 3;
+  // 玩家展示昵称。
   string display_name = 4;
+  // 客户端版本号，便于灰度兼容和问题排查。
   string client_version = 5;
 }
 
+// 进入房间结果。
 message JoinRoomResponse {
+  // 被响应的客户端 request_id。
   string request_id = 1;
+  // 是否成功加入。
   bool accepted = 2;
+  // 若失败，对应的拒绝原因。
   RejectCode reject_code = 3;
+  // 房间 ID。
   string room_id = 4;
+  // 当前对局 ID。
   string match_id = 5;
+  // 服务端为该玩家分配的座位。
   Seat seat = 6;
+  // 当前 WebSocket 连接的临时连接号。
   string connection_id = 7;
+  // 断线重连时使用的恢复令牌。
   string resume_token = 8;
+  // 房间规则配置快照。
   RoomConfig room_config = 9;
+  // 面向日志或调试的附加说明。
   string message = 10;
+  // 服务端已知的最新事件号。
   uint64 latest_event_seq = 11;
 }
 
+// 准备/取消准备请求。
 message ReadyRequest {
+  // true 表示准备，false 表示取消准备。
   bool ready = 1;
 }
 
+// 心跳包。
 message Heartbeat {
+  // 客户端本地发送时间，便于测 RTT。
   uint64 client_time_ms = 1;
+  // 客户端目前已经接收到的最新事件号。
   uint64 last_received_event_seq = 2;
 }
 
+// 断线重连请求。
 message ResumeSessionRequest {
+  // 目标房间 ID。
   string room_id = 1;
+  // 业务用户 ID。
   string user_id = 2;
+  // 加入房间时服务端下发的恢复令牌。
   string resume_token = 3;
+  // 客户端上次成功消费到的事件号。
   uint64 last_received_event_seq = 4;
 }
 
+// 请求被拒绝时的统一错误响应。
 message ActionRejected {
+  // 对应的客户端 request_id。
   string request_id = 1;
+  // 拒绝原因码。
   RejectCode reject_code = 2;
+  // 便于日志和调试的人类可读说明。
   string message = 3;
+  // 客户端声称自己所基于的事件号。
   uint64 expected_event_seq = 4;
+  // 服务端当前真实事件号。
   uint64 actual_event_seq = 5;
+  // 若请求属于某个操作窗口，则返回窗口 ID。
   uint64 action_window_id = 6;
 }
 
+// 玩家连接状态变化广播。
 message PlayerConnectionChanged {
+  // 房间 ID。
   string room_id = 1;
+  // 当前对局 ID。
   string match_id = 2;
+  // 业务用户 ID。
   string user_id = 3;
+  // 玩家座位。
   Seat seat = 4;
+  // 玩家最新状态。
   PlayerStatus status = 5;
+  // 当前是否在线。
   bool connected = 6;
+  // 若为断线状态，允许重连恢复的截止时间。
   uint64 reconnect_deadline_unix_ms = 7;
 }
 
+// 心跳响应。
 message Pong {
+  // 原样回显的客户端 request_id。
   string request_id = 1;
+  // 服务端当前时间。
   uint64 server_time_ms = 2;
+  // 回显客户端发送时间，用于 RTT 估算。
   uint64 echoed_client_time_ms = 3;
+  // 服务端视角下的最新事件号。
   uint64 latest_event_seq = 4;
 }
