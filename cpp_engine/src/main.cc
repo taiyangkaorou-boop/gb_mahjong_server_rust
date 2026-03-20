@@ -10,6 +10,7 @@
 
 namespace gb_mahjong::engine_server {
 
+// 把环境变量读取抽成小函数，避免 main 里散落重复的 getenv 判空逻辑。
 std::string ReadEnvOrDefault(const char* key, const char* fallback) {
   const char* value = std::getenv(key);
   if (value == nullptr || std::string(value).empty()) {

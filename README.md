@@ -24,6 +24,64 @@
 - C++ 规则引擎可构建
 - GitHub SSH 推送链路已打通
 
+## 最新补充：回放与事件流
+
+当前仓库已经补上最小可用的 replay 读取链路：
+
+- `GET /api/v1/matches/{match_id}`：读取对局聚合摘要
+- `GET /api/v1/matches/{match_id}/events`：读取原始事件流，按 `event_seq` 升序返回
+- `GET /api/v1/matches/{match_id}/replay`：读取结构化回放数据流
+
+`/replay` 的当前约束：
+
+- 只允许参赛玩家或房间创建者读取
+- 只对 `matches.status = finished` 的已结束对局开放
+- 返回的数据结构包含：
+  - `match_record`
+  - `rounds`
+  - `terminal_entry`
+  - `warnings`
+
+其中 `warnings` 用于承载坏 payload、未知事件类型或缺失 `round_id` 这类“可降级但不致命”的问题，避免单条脏事件把整个 replay 查询打成 `500`。
+
+### 抢操作窗口事件的持久化语义
+
+为了让 replay 能稳定复盘“窗口何时打开、何时关闭、为什么由某个座位胜出”，当前仓库已经固定以下规则：
+
+- `claim_window_opened` 和 `claim_window_resolved` 都使用独立分配的持久化 `event_seq`
+- 它们不再复用源动作的 `source_event_seq`
+- payload 中继续保留：
+  - `action_window_id`
+  - `source_event_seq`
+  - `source_seat`
+  - `target_tile`
+  - `resolution_kind`
+
+这样做的原因是：
+
+- `match_events(match_id, event_seq)` 有唯一约束
+- 如果窗口事件复用源动作序号，就会和弃牌/补杠动作冲突
+- 数据库写入失败又是异步日志降级，最终会导致 replay 丢窗口事件
+
+当前这条修正已经有房间级回归测试覆盖，保证：
+
+- `claim_window_opened` 的持久化序号独立且稳定
+- `claim_window_resolved` 会排在后续摸牌或 claim 动作之前
+- PASS 收口路径不会再静默丢失窗口关闭事件
+
+### `/events` 与 `/replay` 的职责边界
+
+当前建议把这两个接口区分使用：
+
+- `/events`：更适合内部调试、排障和审计，返回 raw event payload
+- `/replay`：更适合作为正式回放读模型，返回结构化时间线与告警信息
+
+后续如果继续演进 replay，优先级建议是：
+
+1. 修补 `claim_window_*` 之外的更多事件读模型
+2. 增加 reducer，把事件流真正还原成逐步状态变化
+3. 再考虑单手回放、进度跳转、服务重启后的恢复重建
+
 ## 阶段计划总览
 
 ### Phase 1：协议定义
@@ -230,6 +288,132 @@ cargo test
 cmake -S cpp_engine -B /tmp/gb_mahjong_cpp_engine_build
 cmake --build /tmp/gb_mahjong_cpp_engine_build -j
 ```
+
+## 测试方法
+
+### 1. 基础功能测试
+
+用于验证当前 Rust 后端的单元测试、房间状态机测试、网关测试和压测模块烟测。
+
+```bash
+cargo test
+```
+
+如果只想单独跑压测模块的测试：
+
+```bash
+cargo test load_test
+```
+
+### 2. 压测二进制
+
+当前仓库已经提供独立压测入口：
+
+```bash
+cargo run --bin room_stress -- --help
+```
+
+压测特性说明：
+
+- 不走 WebSocket
+- 不走 PostgreSQL
+- 不走规则引擎
+- 不做真实麻将裁决
+- 只压 `RoomManager + tokio::spawn + mpsc + RoomState`
+
+压测行为说明：
+
+- 每 4 个玩家组成 1 个房间
+- 使用真实牌墙发牌逻辑
+- 当前轮到谁，就从该玩家真实持有的牌中随机打一张
+- 不处理吃、碰、杠、胡竞争窗口
+- 达到动作阈值后，随机指定一名玩家获胜作为收口
+
+### 3. 压测参数说明
+
+常用参数：
+
+- `--players`：总玩家数，必须是 4 的倍数
+- `--rooms`：总房间数；如果不传，默认按 `players / 4` 推导
+- `--seed`：随机种子，用于复现同一批压测结果
+- `--max-actions-per-room`：每个房间最多随机打牌多少步
+- `--concurrency`：同时活跃的房间任务数量
+- `--sample-interval-ms`：CPU / RSS 采样间隔
+- `--json-out`：把压测汇总写入 JSON 文件
+
+### 4. 功能烟测
+
+单房烟测：
+
+```bash
+cargo run --bin room_stress -- --players 4 --seed 42 --max-actions-per-room 16 --concurrency 1 --sample-interval-ms 10
+```
+
+100 房烟测：
+
+```bash
+cargo run --bin room_stress -- --players 400 --rooms 100 --seed 7 --max-actions-per-room 24 --concurrency 16 --sample-interval-ms 10
+```
+
+1000 房烟测：
+
+```bash
+cargo run --bin room_stress -- --players 4000 --rooms 1000 --seed 11 --max-actions-per-room 24 --concurrency 128 --sample-interval-ms 25
+```
+
+### 5. 手工压力测试矩阵
+
+10000 房：
+
+```bash
+cargo run --bin room_stress -- --players 40000 --rooms 10000 --seed 19 --max-actions-per-room 24 --concurrency 512 --sample-interval-ms 100
+```
+
+50000 房：
+
+```bash
+cargo run --bin room_stress -- --players 200000 --rooms 50000 --seed 23 --max-actions-per-room 24 --concurrency 1024 --sample-interval-ms 250
+```
+
+100000 房：
+
+```bash
+cargo run --bin room_stress -- --players 400000 --rooms 100000 --seed 29 --max-actions-per-room 24 --concurrency 2048 --sample-interval-ms 500
+```
+
+250000 房：
+
+```bash
+cargo run --bin room_stress -- --players 1000000 --rooms 250000 --seed 31 --max-actions-per-room 24 --concurrency 4096 --sample-interval-ms 1000 --json-out /tmp/room_stress_250k.json
+```
+
+### 6. 压测输出指标
+
+压测会在控制台输出这些关键指标：
+
+- 总玩家数
+- 总房间数
+- 同时活跃房间峰值
+- 完成房间数
+- 失败房间数
+- 总动作数
+- 总耗时
+- `actions/sec`
+- `rooms/sec`
+- 平均每房动作数
+- 峰值 RSS
+- 结束时 RSS
+- 峰值 CPU 百分比
+
+如果传了 `--json-out`，还会额外输出 JSON 汇总文件，便于后续做容量记录和横向对比。
+
+### 7. 测试建议
+
+- 开发阶段优先跑 `1 房 / 100 房 / 1000 房` 烟测
+- 大规模测试不要一开始就直接冲 `250000` 房
+- `--concurrency` 建议按机器核数和内存逐步上调
+- 先记录每一档的 `elapsed_ms / actions_per_sec / peak_rss_bytes / peak_cpu_percent`
+- 当前压测结果只代表“单机、当前构建、当前参数”下的房间状态机本体压力，不代表完整线上容量
 
 ## 说明
 

@@ -105,6 +105,24 @@ fn build_shuffled_wall(room_config: &RoomConfig, room_id: &str, hand_number: u32
     wall
 }
 
+fn build_load_test_wall(
+    room_config: &RoomConfig,
+    room_id: &str,
+    hand_number: u32,
+    base_seed: u64,
+) -> Vec<Tile> {
+    let mut wall = build_standard_wall(room_config.enable_flower_tiles);
+    let mut seed = stable_room_seed(base_seed, room_id, hand_number);
+
+    for index in (1..wall.len()).rev() {
+        seed = xorshift64(seed);
+        let swap_index = (seed as usize) % (index + 1);
+        wall.swap(index, swap_index);
+    }
+
+    wall
+}
+
 fn build_standard_wall(enable_flower_tiles: bool) -> Vec<Tile> {
     let mut wall = Vec::new();
 
@@ -166,13 +184,17 @@ fn build_standard_wall(enable_flower_tiles: bool) -> Vec<Tile> {
 }
 
 fn stable_wall_seed(room_id: &str, hand_number: u32) -> u64 {
-    let mut hash = 1469598103934665603_u64;
+    stable_room_seed(unix_time_ms(), room_id, hand_number)
+}
+
+fn stable_room_seed(base_seed: u64, room_id: &str, hand_number: u32) -> u64 {
+    let mut hash = 1469598103934665603_u64 ^ base_seed;
     for byte in room_id.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(1099511628211);
     }
 
-    hash ^ (u64::from(hand_number) << 32) ^ unix_time_ms()
+    hash ^ (u64::from(hand_number) << 32)
 }
 
 fn xorshift64(mut state: u64) -> u64 {

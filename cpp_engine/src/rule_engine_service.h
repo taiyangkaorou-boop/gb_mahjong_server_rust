@@ -27,6 +27,7 @@ class RuleEngineServiceImpl final
       gb_mahjong::engine::v1::CalculateScoreResponse* response) override;
 
  private:
+  // service 本身不持有任何房间状态，只持有一个可复用的规则适配器实例。
   std::shared_ptr<GbMahjongAdapter> adapter_;
 };
 

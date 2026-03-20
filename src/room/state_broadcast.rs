@@ -316,6 +316,10 @@ impl RoomState {
     }
 
     fn broadcast_action_frame(&self, frame: ServerFrame) {
+        if !self.runtime_mode.emits_network_frames() {
+            return;
+        }
+
         for player in self.players_by_seat.values() {
             if !player.connected {
                 continue;
@@ -335,6 +339,7 @@ impl RoomState {
         }
     }
 
+    // 结算后只回写最终总分，不在这里推导任何分数公式。
     fn apply_score_deltas(&mut self, score_deltas: &[engine_proto::SeatScoreDelta]) {
         for score_delta in score_deltas {
             let Some(seat) = map_engine_seat_to_client(score_delta.seat) else {
@@ -346,6 +351,8 @@ impl RoomState {
         }
     }
 
+    // 被吃碰杠/点和使用掉的弃牌要标记 claimed，
+    // 这样回放和客户端弃牌河表现才能区分"仍在河里"和"已被拿走"。
     fn mark_discard_claimed(&mut self, source_seat: Seat, source_event_seq: u64) {
         let Some(round_state) = self.player_round_state.get_mut(&source_seat) else {
             return;
@@ -360,6 +367,8 @@ impl RoomState {
         }
     }
 
+    // 局结算是对客户端最重的一次广播：
+    // 既要推送结算结果，也要把这次和牌对应的事件固化进 match_events。
     fn broadcast_round_settlement(
         &mut self,
         winner_seat: Seat,
@@ -392,22 +401,7 @@ impl RoomState {
                 description: fan_detail.description.clone(),
             })
             .collect();
-        let revealed_hands = SEAT_ORDER
-            .into_iter()
-            .filter_map(|seat| {
-                let round_state = self.player_round_state.get(&seat)?;
-                Some(RevealedHand {
-                    seat: seat as i32,
-                    concealed_tiles: merged_private_tiles(round_state)
-                        .into_iter()
-                        .map(|tile| tile as i32)
-                        .collect(),
-                    melds: round_state.melds.clone(),
-                    flowers: round_state.flowers.iter().map(|tile| *tile as i32).collect(),
-                    winner: seat == winner_seat,
-                })
-            })
-            .collect();
+        let revealed_hands = self.build_revealed_hands(Some(winner_seat));
         let settlement_flags = response
             .settlement_flags
             .iter()
@@ -465,6 +459,133 @@ impl RoomState {
             })),
         };
 
+        self.broadcast_frame_to_connected_players(frame, "RoundSettlement");
+    }
+
+    fn broadcast_draw_round_settlement(&mut self) {
+        // 流局同样要走正式结算广播和事件落库，
+        // 这样 replay 与数据库聚合才能看到完整的一手收口。
+        let event_seq = self.allocate_event_seq();
+        let player_results = SEAT_ORDER
+            .into_iter()
+            .filter_map(|seat| {
+                let player = self.players_by_seat.get(&seat)?;
+                Some(RoundPlayerResult {
+                    seat: seat as i32,
+                    round_delta: 0,
+                    total_score_after: player.score,
+                })
+            })
+            .collect::<Vec<_>>();
+        let revealed_hands = self.build_revealed_hands(None);
+        let settlement_flags = vec![SettlementFlag::DrawGame as i32];
+
+        self.persist_match_event(
+            "round_settlement",
+            event_seq,
+            None,
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "round_id": self.round_id(),
+                "event_seq": event_seq,
+                "winner_seat": Seat::Unspecified.as_str_name(),
+                "discarder_seat": Option::<String>::None,
+                "win_type": crate::proto::client::WinType::Unspecified.as_str_name(),
+                "winning_tile": Tile::Unspecified.as_str_name(),
+                "player_results": player_results.iter().map(|result| serde_json::json!({
+                    "seat": Seat::try_from(result.seat).ok().map(|seat| seat.as_str_name().to_owned()),
+                    "round_delta": result.round_delta,
+                    "total_score_after": result.total_score_after,
+                })).collect::<Vec<_>>(),
+                "fan_details": Vec::<serde_json::Value>::new(),
+                "settlement_flags": vec![SettlementFlag::DrawGame.as_str_name()],
+                "wall_tiles_remaining": self.wall_tiles_remaining,
+            }),
+        );
+
+        let frame = ServerFrame {
+            event_seq,
+            payload: Some(server_frame::Payload::RoundSettlement(RoundSettlement {
+                room_id: self.room_id.clone(),
+                match_id: self.match_id.clone(),
+                round_id: self.round_id(),
+                prevailing_wind: self.prevailing_wind as i32,
+                hand_number: self.hand_number,
+                dealer_seat: self.dealer_seat as i32,
+                win_type: crate::proto::client::WinType::Unspecified as i32,
+                winner_seat: Seat::Unspecified as i32,
+                discarder_seat: Seat::Unspecified as i32,
+                winning_tile: Tile::Unspecified as i32,
+                player_results,
+                fan_details: Vec::new(),
+                revealed_hands,
+                settlement_flags,
+                wall_tiles_remaining: self.wall_tiles_remaining,
+            })),
+        };
+
+        self.broadcast_frame_to_connected_players(frame, "RoundSettlement");
+    }
+
+    fn broadcast_match_settlement(&mut self, summary: &MatchSettlementSummary) {
+        // 整场结算独立成一个事件类型，数据库聚合层会据此把 matches.status 置为 finished。
+        self.persist_match_event(
+            "match_settlement",
+            summary.event_seq,
+            None,
+            serde_json::json!({
+                "room_id": self.room_id,
+                "match_id": self.match_id,
+                "event_seq": summary.event_seq,
+                "final_result": {
+                    "finished_at_unix_ms": summary.finished_at_unix_ms,
+                    "standings": summary.standings.iter().map(|standing| serde_json::json!({
+                        "seat": Seat::try_from(standing.seat).ok().map(|seat| seat.as_str_name().to_owned()),
+                        "user_id": standing.user_id,
+                        "display_name": standing.display_name,
+                        "final_score": standing.final_score,
+                        "rank": standing.rank,
+                        "rounds_won": standing.rounds_won,
+                        "self_draw_wins": standing.self_draw_wins,
+                    })).collect::<Vec<_>>(),
+                },
+            }),
+        );
+
+        let frame = ServerFrame {
+            event_seq: summary.event_seq,
+            payload: Some(server_frame::Payload::MatchSettlement(MatchSettlement {
+                room_id: self.room_id.clone(),
+                match_id: self.match_id.clone(),
+                standings: summary.standings.clone(),
+                finished_at_unix_ms: summary.finished_at_unix_ms,
+            })),
+        };
+
+        self.broadcast_frame_to_connected_players(frame, "MatchSettlement");
+    }
+
+    fn build_revealed_hands(&self, winner_seat: Option<Seat>) -> Vec<RevealedHand> {
+        SEAT_ORDER
+            .into_iter()
+            .filter_map(|seat| {
+                let round_state = self.player_round_state.get(&seat)?;
+                Some(RevealedHand {
+                    seat: seat as i32,
+                    concealed_tiles: merged_private_tiles(round_state)
+                        .into_iter()
+                        .map(|tile| tile as i32)
+                        .collect(),
+                    melds: round_state.melds.clone(),
+                    flowers: round_state.flowers.iter().map(|tile| *tile as i32).collect(),
+                    winner: Some(seat) == winner_seat,
+                })
+            })
+            .collect()
+    }
+
+    fn broadcast_frame_to_connected_players(&self, frame: ServerFrame, label: &str) {
         for player in self.players_by_seat.values() {
             if !player.connected {
                 continue;
@@ -478,13 +599,18 @@ impl RoomState {
                     room_id = %self.room_id,
                     seat = %player.seat.as_str_name(),
                     ?error,
-                    "failed to broadcast RoundSettlement"
+                    "failed to broadcast {label}"
                 );
             }
         }
     }
 
     fn broadcast_sync_state(&mut self, reason: SyncReason) {
+        // 压测模式不需要构造全量快照，直接短路可以避免序列化和 event_seq 噪音。
+        if !self.runtime_mode.emits_network_frames() {
+            return;
+        }
+
         // SyncState 是兜底快照：当状态切换复杂时，直接用一次全量同步把客户端拉回权威视图。
         let event_seq = self.allocate_event_seq();
 
@@ -513,6 +639,10 @@ impl RoomState {
     }
 
     fn broadcast_connection_changed(&mut self, seat: Seat, connected: bool) {
+        if !self.runtime_mode.emits_network_frames() {
+            return;
+        }
+
         let Some((user_id, status)) = self
             .players_by_seat
             .get(&seat)
@@ -560,6 +690,10 @@ impl RoomState {
         expected_event_seq: u64,
         action_window_id: u64,
     ) {
+        if !self.runtime_mode.emits_network_frames() {
+            return;
+        }
+
         let Some(user_id) = self.connection_to_user.get(connection_id) else {
             return;
         };
@@ -721,6 +855,8 @@ impl RoomState {
         }
     }
 
+    // 房间状态机只产出"规范化后的领域事件"，
+    // 真正落库由后台 MatchEventWriter 异步完成。
     fn persist_match_event(
         &self,
         event_type: &str,
@@ -728,6 +864,10 @@ impl RoomState {
         actor_seat: Option<Seat>,
         event_payload: serde_json::Value,
     ) {
+        if !self.runtime_mode.persists_events() {
+            return;
+        }
+
         let actor_user_id = actor_seat.and_then(|seat| {
             self.players_by_seat
                 .get(&seat)
@@ -748,6 +888,7 @@ impl RoomState {
         });
     }
 
+    // 开局事件要把四家起手私有牌一并记下来，否则后续 replay 无法完整还原。
     fn persist_round_started_event(&self, event_seq: u64) {
         let players = SEAT_ORDER
             .into_iter()
@@ -789,15 +930,21 @@ impl RoomState {
         );
     }
 
-    fn persist_claim_window_opened_event(&self, window: &ActiveClaimWindowState) {
+    // 抢操作窗口打开时，要把候选座位和各自选项一起固化，
+    // 这样离线分析时才能知道当时服务端允许了哪些响应。
+    fn persist_claim_window_opened_event(&mut self, window: &ActiveClaimWindowState) {
+        // 抢操作窗口是独立的持久化事件，不能复用 source_event_seq。
+        // 否则会和触发它的弃牌/补杠动作撞上 match_events 的唯一键。
+        let event_seq = self.allocate_event_seq();
         self.persist_match_event(
             "claim_window_opened",
-            window.source_event_seq,
+            event_seq,
             Some(window.source_seat),
             serde_json::json!({
                 "room_id": self.room_id,
                 "match_id": self.match_id,
                 "round_id": self.round_id(),
+                "event_seq": event_seq,
                 "action_window_id": window.action_window_id,
                 "source_event_seq": window.source_event_seq,
                 "source_seat": window.source_seat.as_str_name(),
@@ -813,21 +960,27 @@ impl RoomState {
         );
     }
 
+    // 抢操作窗口关闭时，记录所有响应和最终裁决结果，
+    // 便于复盘"为什么这家赢了优先级"。
     fn persist_claim_window_resolved_event(
-        &self,
+        &mut self,
         window: &ActiveClaimWindowState,
         responded_seats: &HashMap<Seat, ClaimResponse>,
         winner_seat: Option<Seat>,
         resolution_kind: &str,
     ) {
+        // 窗口关闭同样需要独立 event_seq，
+        // replay 才能稳定表达“窗口何时关闭、之后又发生了什么动作”。
+        let event_seq = self.allocate_event_seq();
         self.persist_match_event(
             "claim_window_resolved",
-            self.current_event_seq(),
+            event_seq,
             winner_seat.or(Some(window.source_seat)),
             serde_json::json!({
                 "room_id": self.room_id,
                 "match_id": self.match_id,
                 "round_id": self.round_id(),
+                "event_seq": event_seq,
                 "action_window_id": window.action_window_id,
                 "source_event_seq": window.source_event_seq,
                 "source_seat": window.source_seat.as_str_name(),

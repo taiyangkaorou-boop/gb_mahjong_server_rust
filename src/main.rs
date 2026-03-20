@@ -1,25 +1,17 @@
-mod app;
-mod auth;
-mod db;
-mod engine;
-mod http;
-mod lobby;
-mod proto;
-mod room;
-mod ws;
-
 use std::{env, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
-use app::{build_router, AppState};
-use auth::{AuthService, DEFAULT_SESSION_TTL_MS};
-use db::{
-    connect_pg_pool, DatabaseConfig, MatchEventWriter, PostgresAuthRepository,
-    PostgresLobbyRepository, PostgresMatchEventRepository,
+use gb_mahjong_server_rust::{
+    app::{build_router, AppState},
+    auth::{AuthService, DEFAULT_SESSION_TTL_MS},
+    db::{
+        connect_pg_pool, DatabaseConfig, MatchEventWriter, MatchQueryService,
+        PostgresAuthRepository, PostgresLobbyRepository, PostgresMatchEventRepository,
+    },
+    engine::{RuleEngineHandle, DEFAULT_RULE_ENGINE_ENDPOINT},
+    lobby::LobbyService,
+    room::RoomManager,
 };
-use engine::{RuleEngineHandle, DEFAULT_RULE_ENGINE_ENDPOINT};
-use lobby::LobbyService;
-use room::RoomManager;
 use tokio::{net::TcpListener, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -43,13 +35,14 @@ async fn main() -> anyhow::Result<()> {
         DEFAULT_SESSION_TTL_MS,
     );
     let lobby_service = LobbyService::new(Arc::new(PostgresLobbyRepository::new(pool.clone())));
-    let match_event_writer = MatchEventWriter::from_repository(Arc::new(
-        PostgresMatchEventRepository::new(pool),
-    ));
+    let match_repository = Arc::new(PostgresMatchEventRepository::new(pool));
+    let match_event_writer = MatchEventWriter::from_repository(match_repository.clone());
+    let match_query_service = MatchQueryService::new(match_repository);
     let state = AppState::new(
         RoomManager::with_rule_engine_and_event_writer(rule_engine, match_event_writer),
         auth_service,
         lobby_service,
+        match_query_service,
     );
     let app = build_router(state);
 

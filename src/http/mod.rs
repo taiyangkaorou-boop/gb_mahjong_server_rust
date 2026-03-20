@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     app::AppState,
     auth::{AuthError, AuthenticatedUser, SessionView},
+    db::{MatchEventRecord, MatchRecord, MatchReplayRecord},
     lobby::{LobbyError, LobbyRoomView},
 };
 
@@ -84,6 +85,9 @@ pub fn api_router() -> Router<AppState> {
         .route("/api/v1/rooms/:room_id/leave", post(leave_room))
         .route("/api/v1/rooms/:room_id/kick", post(kick_member))
         .route("/api/v1/rooms/:room_id/disband", post(disband_room))
+        .route("/api/v1/matches/:match_id", get(get_match))
+        .route("/api/v1/matches/:match_id/events", get(list_match_events))
+        .route("/api/v1/matches/:match_id/replay", get(get_match_replay))
 }
 
 async fn register_guest(
@@ -236,6 +240,64 @@ async fn disband_room(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_match(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> Result<Json<MatchRecord>, ApiError> {
+    // 对局摘要查询走只读数据库路径，不经过 room task。
+    let user = authenticate_request(&state, &headers).await?;
+    let Some(record) = state
+        .match_query_service()
+        .get_match_for_user(&user.user_id, &match_id)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    else {
+        return Err(ApiError::NotFound("match was not found".to_owned()));
+    };
+
+    Ok(Json(record))
+}
+
+async fn list_match_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> Result<Json<Vec<MatchEventRecord>>, ApiError> {
+    // replay 读取统一按 event_seq 升序返回，客户端无需自己重新排序。
+    let user = authenticate_request(&state, &headers).await?;
+    let Some(events) = state
+        .match_query_service()
+        .list_events_for_user(&user.user_id, &match_id)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    else {
+        return Err(ApiError::NotFound("match was not found".to_owned()));
+    };
+
+    Ok(Json(events))
+}
+
+async fn get_match_replay(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(match_id): Path<String>,
+) -> Result<Json<MatchReplayRecord>, ApiError> {
+    // replay 是对 raw match_events 的容错型读模型，
+    // 第一版只开放给已结束对局，避免把进行中的私有牌过程暴露出去。
+    let user = authenticate_request(&state, &headers).await?;
+    let Some(replay) = state
+        .match_query_service()
+        .build_replay_for_user(&user.user_id, &match_id)
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+    else {
+        return Err(ApiError::NotFound("match replay was not found".to_owned()));
+    };
+
+    Ok(Json(replay))
 }
 
 async fn authenticate_request(

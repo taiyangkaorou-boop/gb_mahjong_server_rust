@@ -6,7 +6,8 @@ use std::sync::{
 use axum::{routing::get, Router};
 
 use crate::{
-    auth::AuthService, http::api_router, lobby::LobbyService, room::RoomManager, ws::ws_handler,
+    auth::AuthService, db::MatchQueryService, http::api_router, lobby::LobbyService,
+    room::RoomManager, ws::ws_handler,
 };
 
 #[derive(Clone)]
@@ -21,6 +22,8 @@ pub struct AppState {
     auth_service: AuthService,
     // 大厅服务只负责房主权限、房间成员和 lobby 生命周期。
     lobby_service: LobbyService,
+    // match 查询服务只读数据库聚合和事件流，不参与实时状态推进。
+    match_query_service: MatchQueryService,
 }
 
 impl Default for AppState {
@@ -29,6 +32,7 @@ impl Default for AppState {
             RoomManager::default(),
             AuthService::default(),
             LobbyService::default(),
+            MatchQueryService::default(),
         )
     }
 }
@@ -38,6 +42,7 @@ impl AppState {
         room_manager: RoomManager,
         auth_service: AuthService,
         lobby_service: LobbyService,
+        match_query_service: MatchQueryService,
     ) -> Self {
         Self {
             next_connection_id: Arc::new(AtomicU64::new(1)),
@@ -45,6 +50,7 @@ impl AppState {
             room_manager,
             auth_service,
             lobby_service,
+            match_query_service,
         }
     }
 
@@ -54,6 +60,7 @@ impl AppState {
             room_manager,
             AuthService::default(),
             LobbyService::default(),
+            MatchQueryService::default(),
         )
     }
 
@@ -79,6 +86,10 @@ impl AppState {
     pub fn lobby_service(&self) -> LobbyService {
         self.lobby_service.clone()
     }
+
+    pub fn match_query_service(&self) -> MatchQueryService {
+        self.match_query_service.clone()
+    }
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -98,12 +109,64 @@ async fn healthz() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
     use axum::{
         body::{to_bytes, Body},
         http::{header, Request, StatusCode},
     };
     use serde_json::{json, Value};
     use tower::util::ServiceExt;
+
+    use crate::db::{
+        MatchEventRecord, MatchEventRepository, MatchQueryService, MatchRecord, MatchStatusRecord,
+        NewMatchEventRecord,
+    };
+
+    #[derive(Default)]
+    struct StaticMatchQueryRepository {
+        // 回放查询测试只需要一个极小的静态仓储，
+        // 用来验证 HTTP 鉴权和 MatchQueryService 的接线是否正确。
+        record: Mutex<Option<MatchRecord>>,
+        events: Mutex<Vec<MatchEventRecord>>,
+    }
+
+    impl StaticMatchQueryRepository {
+        fn seed(&self, record: MatchRecord, events: Vec<MatchEventRecord>) {
+            *self
+                .record
+                .lock()
+                .expect("record lock should not be poisoned") = Some(record);
+            *self
+                .events
+                .lock()
+                .expect("events lock should not be poisoned") = events;
+        }
+    }
+
+    #[async_trait]
+    impl MatchEventRepository for StaticMatchQueryRepository {
+        async fn append_event(&self, _event: NewMatchEventRecord) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn list_events(&self, _match_id: &str) -> anyhow::Result<Vec<MatchEventRecord>> {
+            Ok(self
+                .events
+                .lock()
+                .expect("events lock should not be poisoned")
+                .clone())
+        }
+
+        async fn get_match(&self, _match_id: &str) -> anyhow::Result<Option<MatchRecord>> {
+            Ok(self
+                .record
+                .lock()
+                .expect("record lock should not be poisoned")
+                .clone())
+        }
+    }
 
     #[tokio::test]
     async fn healthz_route_returns_ok() {
@@ -383,5 +446,166 @@ mod tests {
             .await
             .expect("execute guest get room request");
         assert_eq!(guest_room_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn match_query_routes_return_authorized_match_and_events() {
+        let repo = Arc::new(StaticMatchQueryRepository::default());
+        let state = AppState::new(
+            RoomManager::default(),
+            AuthService::default(),
+            LobbyService::default(),
+            MatchQueryService::new(repo.clone()),
+        );
+        let session = state
+            .auth_service()
+            .register_guest("ReplayUser".to_owned())
+            .await
+            .expect("guest registration should succeed");
+        repo.seed(
+            MatchRecord {
+                match_id: "match-replay-1".to_owned(),
+                room_id: "room-replay-1".to_owned(),
+                status: MatchStatusRecord::Finished,
+                ruleset_id: "gb_mahjong_cn_v1".to_owned(),
+                config_snapshot: json!({ "seat_count": 4 }),
+                seating_snapshot: json!({
+                    "EAST": {
+                        "user_id": session.user_id,
+                        "display_name": "ReplayUser"
+                    }
+                }),
+                current_round_id: Some("hand-4".to_owned()),
+                prevailing_wind: Some("EAST".to_owned()),
+                dealer_seat: Some("EAST".to_owned()),
+                started_at_unix_ms: Some(1_700_000_000_000u64),
+                ended_at_unix_ms: Some(1_700_000_100_000u64),
+                created_by_user_id: Some(session.user_id.clone()),
+                winner_user_id: Some(session.user_id.clone()),
+                last_event_seq: 42,
+                final_result: Some(json!({
+                    "standings": [{ "user_id": session.user_id, "rank": 1 }]
+                })),
+                created_at_unix_ms: 1_700_000_000_000u64,
+                updated_at_unix_ms: 1_700_000_100_000u64,
+            },
+            vec![
+                MatchEventRecord {
+                    event_id: 1,
+                    match_id: "match-replay-1".to_owned(),
+                    round_id: Some("hand-4".to_owned()),
+                    event_seq: 41,
+                    event_type: "round_started".to_owned(),
+                    actor_user_id: Some(session.user_id.clone()),
+                    actor_seat: Some("EAST".to_owned()),
+                    request_id: None,
+                    correlation_id: None,
+                    causation_event_seq: None,
+                    event_payload: json!({
+                        "phase": "GAME_PHASE_WAITING_DISCARD",
+                        "prevailing_wind": "EAST",
+                        "dealer_seat": "EAST",
+                        "current_turn_seat": "EAST",
+                        "hand_number": 4,
+                        "dealer_streak": 0,
+                        "wall_tiles_remaining": 70,
+                        "dead_wall_tiles_remaining": 14,
+                        "players": [],
+                    }),
+                    created_at_unix_ms: 1_700_000_050_000u64,
+                },
+                MatchEventRecord {
+                    event_id: 2,
+                    match_id: "match-replay-1".to_owned(),
+                    round_id: Some("hand-4".to_owned()),
+                    event_seq: 42,
+                    event_type: "match_settlement".to_owned(),
+                    actor_user_id: Some(session.user_id.clone()),
+                    actor_seat: Some("EAST".to_owned()),
+                    request_id: None,
+                    correlation_id: None,
+                    causation_event_seq: None,
+                    event_payload: json!({
+                        "final_result": {
+                            "finished_at_unix_ms": 1_700_000_100_000u64,
+                            "standings": [{ "user_id": session.user_id, "rank": 1 }]
+                        }
+                    }),
+                    created_at_unix_ms: 1_700_000_100_000u64,
+                },
+            ],
+        );
+        let app = build_router(state);
+
+        let match_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/matches/match-replay-1")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", session.session_token),
+                    )
+                    .body(Body::empty())
+                    .expect("build match request"),
+            )
+            .await
+            .expect("execute match request");
+        assert_eq!(match_response.status(), StatusCode::OK);
+        let match_body = to_bytes(match_response.into_body(), usize::MAX)
+            .await
+            .expect("read match body");
+        let match_json: Value = serde_json::from_slice(&match_body).expect("parse match json");
+        assert_eq!(match_json["match_id"], "match-replay-1");
+        assert_eq!(match_json["status"], "Finished");
+
+        let events_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/matches/match-replay-1/events")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", session.session_token),
+                    )
+                    .body(Body::empty())
+                    .expect("build events request"),
+            )
+            .await
+            .expect("execute events request");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let events_body = to_bytes(events_response.into_body(), usize::MAX)
+            .await
+            .expect("read events body");
+        let events_json: Value = serde_json::from_slice(&events_body).expect("parse events json");
+        assert_eq!(events_json.as_array().unwrap().len(), 2);
+        assert_eq!(events_json[0]["event_type"], "round_started");
+        assert_eq!(events_json[1]["event_type"], "match_settlement");
+
+        let replay_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/matches/match-replay-1/replay")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", session.session_token),
+                    )
+                    .body(Body::empty())
+                    .expect("build replay request"),
+            )
+            .await
+            .expect("execute replay request");
+        assert_eq!(replay_response.status(), StatusCode::OK);
+        let replay_body = to_bytes(replay_response.into_body(), usize::MAX)
+            .await
+            .expect("read replay body");
+        let replay_json: Value = serde_json::from_slice(&replay_body).expect("parse replay json");
+        assert_eq!(replay_json["match_record"]["match_id"], "match-replay-1");
+        assert_eq!(replay_json["rounds"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            replay_json["terminal_entry"]["event_type"],
+            "match_settlement"
+        );
+        assert_eq!(replay_json["warnings"].as_array().unwrap().len(), 0);
     }
 }

@@ -2,12 +2,17 @@
 // 房间模块测试集中放在独立文件里，
 // 便于继续扩展回合流和抢操作场景，而不把主状态机文件继续拉长。
 mod tests {
-    use std::time::Duration;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
-    use tokio::time::timeout;
+    use async_trait::async_trait;
+    use tokio::{sync::Notify, time::timeout};
 
     use super::*;
     use crate::{
+        db::{MatchEventRepository, MatchEventWriter, MatchRecord, NewMatchEventRecord},
         engine::{MockRuleEngine, RuleEngineHandle},
         proto::{
             client::{player_action_request, server_frame, DeclareWinAction, PassAction},
@@ -74,6 +79,52 @@ mod tests {
             user_id: user_id.to_owned(),
             display_name: display_name.to_owned(),
             seat,
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingMatchEventRepository {
+        // 这个测试仓储专门用来观测房间状态机真正尝试写了哪些事件。
+        events: Mutex<Vec<NewMatchEventRecord>>,
+        notify: Notify,
+    }
+
+    impl RecordingMatchEventRepository {
+        async fn wait_for_event_count(&self, expected_len: usize) -> Vec<NewMatchEventRecord> {
+            loop {
+                if let Some(events) = self.snapshot_if_len(expected_len) {
+                    return events;
+                }
+
+                timeout(Duration::from_secs(1), self.notify.notified())
+                    .await
+                    .expect("persisted events should arrive in time");
+            }
+        }
+
+        fn snapshot_if_len(&self, expected_len: usize) -> Option<Vec<NewMatchEventRecord>> {
+            let events = self.events.lock().expect("events lock should stay healthy");
+            (events.len() >= expected_len).then(|| events.clone())
+        }
+    }
+
+    #[async_trait]
+    impl MatchEventRepository for RecordingMatchEventRepository {
+        async fn append_event(&self, event: NewMatchEventRecord) -> anyhow::Result<()> {
+            self.events
+                .lock()
+                .expect("events lock should stay healthy")
+                .push(event);
+            self.notify.notify_waiters();
+            Ok(())
+        }
+
+        async fn list_events(&self, _match_id: &str) -> anyhow::Result<Vec<crate::db::MatchEventRecord>> {
+            Ok(Vec::new())
+        }
+
+        async fn get_match(&self, _match_id: &str) -> anyhow::Result<Option<MatchRecord>> {
+            Ok(None)
         }
     }
 
@@ -322,6 +373,8 @@ mod tests {
             RuleEngineHandle::default(),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -406,6 +459,8 @@ mod tests {
             RuleEngineHandle::default(),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -555,6 +610,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine.clone()),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -655,6 +712,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine.clone()),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -784,6 +843,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine.clone()),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -938,6 +999,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -1005,6 +1068,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claim_window_opened_event_uses_distinct_persistence_sequence() {
+        let repo = Arc::new(RecordingMatchEventRepository::default());
+        let mock_rule_engine = MockRuleEngine::new(engine_proto::ValidateActionResponse {
+            is_legal: false,
+            reject_code: engine_proto::ValidationRejectCode::HandNotComplete as i32,
+            derived_action_type: engine_proto::ActionKind::Unspecified as i32,
+            meld_result: None,
+            winning_context: None,
+            suggested_follow_ups: Vec::new(),
+            explanation: "not a winning hand".to_owned(),
+        });
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-claim-open-persist".to_owned(),
+            RuleEngineHandle::new(mock_rule_engine),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::from_repository(repo.clone()),
+            RoomRuntimeMode::Production,
+        );
+
+        let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+        state.round_runtime = Some(RoundRuntimeState {
+            live_wall: VecDeque::new(),
+            dead_wall: VecDeque::new(),
+            active_claim_window: None,
+            last_resolved_action: Some(ResolvedActionRecord {
+                event_seq: 98,
+                actor_seat: Seat::East,
+                action_kind: crate::proto::client::ActionKind::Discard,
+                tile: Some(Tile::Character5),
+                replacement_draw: false,
+                rob_kong_candidate: false,
+            }),
+            turn_index: 1,
+            replacement_draw_pending: false,
+        });
+        state.phase = GamePhase::WaitingDiscard;
+        state.next_event_seq = 100;
+        state.player_round_state.get_mut(&Seat::South).unwrap().concealed_tiles =
+            vec![Tile::Character5, Tile::Character5];
+
+        let opened = state
+            .open_discard_claim_window(Seat::East, Tile::Character5, 99)
+            .await
+            .expect("claim window should open");
+
+        assert!(opened);
+        let events = repo.wait_for_event_count(1).await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "claim_window_opened");
+        assert_eq!(events[0].event_seq, 100);
+        assert_ne!(events[0].event_seq, 99);
+        assert_eq!(events[0].event_payload["event_seq"].as_u64(), Some(100));
+        assert_eq!(events[0].event_payload["source_event_seq"].as_u64(), Some(99));
+    }
+
+    #[tokio::test]
+    async fn claim_window_resolved_event_keeps_total_order_before_follow_up_draw() {
+        let repo = Arc::new(RecordingMatchEventRepository::default());
+        let mock_rule_engine = MockRuleEngine::new(engine_proto::ValidateActionResponse {
+            is_legal: false,
+            reject_code: engine_proto::ValidationRejectCode::HandNotComplete as i32,
+            derived_action_type: engine_proto::ActionKind::Unspecified as i32,
+            meld_result: None,
+            winning_context: None,
+            suggested_follow_ups: Vec::new(),
+            explanation: "not a winning hand".to_owned(),
+        });
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-claim-resolve-persist".to_owned(),
+            RuleEngineHandle::new(mock_rule_engine),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::from_repository(repo.clone()),
+            RoomRuntimeMode::Production,
+        );
+
+        let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+        state.round_runtime = Some(RoundRuntimeState {
+            live_wall: VecDeque::from(vec![Tile::Bamboo1]),
+            dead_wall: VecDeque::new(),
+            active_claim_window: None,
+            last_resolved_action: Some(ResolvedActionRecord {
+                event_seq: 98,
+                actor_seat: Seat::East,
+                action_kind: crate::proto::client::ActionKind::Discard,
+                tile: Some(Tile::Character5),
+                replacement_draw: false,
+                rob_kong_candidate: false,
+            }),
+            turn_index: 1,
+            replacement_draw_pending: false,
+        });
+        state.phase = GamePhase::WaitingDiscard;
+        state.current_turn_seat = Seat::East;
+        state.next_event_seq = 100;
+        state.player_round_state.get_mut(&Seat::South).unwrap().concealed_tiles =
+            vec![Tile::Character5, Tile::Character5];
+
+        let opened = state
+            .open_discard_claim_window(Seat::East, Tile::Character5, 99)
+            .await
+            .expect("claim window should open");
+        assert!(opened);
+
+        let request = PlayerActionRequest {
+            room_id: "room-claim-resolve-persist".to_owned(),
+            match_id: "match-room-claim-resolve-persist".to_owned(),
+            round_id: "hand-1".to_owned(),
+            expected_event_seq: state.current_event_seq(),
+            action_window_id: 1,
+            action: Some(player_action_request::Action::Pass(PassAction {
+                source_event_seq: 99,
+            })),
+        };
+        let pass = match request.action.as_ref().expect("pass action should exist") {
+            player_action_request::Action::Pass(pass) => pass,
+            other => panic!("expected pass action, got {other:?}"),
+        };
+        state
+            .handle_pass_action(
+                "req-pass-south".to_owned(),
+                "conn-seat_south".to_owned(),
+                Seat::South,
+                &request,
+                pass,
+            )
+            .await;
+
+        let events = repo.wait_for_event_count(3).await;
+        let event_kinds = events
+            .iter()
+            .map(|event| (event.event_type.as_str(), event.event_seq))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event_kinds,
+            vec![
+                ("claim_window_opened", 100),
+                ("claim_window_resolved", 102),
+                ("action_broadcast", 103),
+            ]
+        );
+        assert_eq!(
+            events[1].event_payload["resolution_kind"].as_str(),
+            Some("PASS")
+        );
+        assert!(events[1].event_payload["winner_seat"].is_null());
+        assert_eq!(events[1].event_payload["source_event_seq"].as_u64(), Some(99));
+        assert_eq!(events[2].event_payload["action_kind"].as_str(), Some("ACTION_KIND_DRAW"));
+    }
+
+    #[tokio::test]
     async fn claim_resolution_prefers_peng_over_chi() {
         let mock_rule_engine = MockRuleEngine::new(engine_proto::ValidateActionResponse {
             is_legal: true,
@@ -1021,6 +1244,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -1230,6 +1455,8 @@ mod tests {
             RuleEngineHandle::new(mock_rule_engine.clone()),
             deterministic_wall_factory(),
             command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
         );
 
         let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
@@ -1405,4 +1632,184 @@ mod tests {
                 .is_empty()
         );
     }
+
+
+    #[tokio::test]
+    async fn draw_game_broadcasts_round_settlement_with_draw_flag() {
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-draw".to_owned(),
+            RuleEngineHandle::default(),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
+        );
+
+        let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+
+        state.start_round().expect("round should start successfully");
+        state
+            .round_runtime
+            .as_mut()
+            .expect("runtime should exist")
+            .live_wall
+            .clear();
+
+        state.advance_turn_after_passes(Seat::East);
+
+        let settlement = match recv_frame(&mut east_rx).await.payload {
+            Some(server_frame::Payload::RoundSettlement(settlement)) => settlement,
+            other => panic!("expected draw RoundSettlement, got {other:?}"),
+        };
+
+        assert_eq!(state.phase, GamePhase::RoundSettlement);
+        assert_eq!(settlement.win_type, crate::proto::client::WinType::Unspecified as i32);
+        assert_eq!(settlement.winner_seat, Seat::Unspecified as i32);
+        assert!(settlement
+            .settlement_flags
+            .contains(&(crate::proto::client::SettlementFlag::DrawGame as i32)));
+        assert!(settlement.player_results.iter().all(|result| result.round_delta == 0));
+    }
+
+    #[tokio::test]
+    async fn advance_after_round_settlement_starts_next_hand_when_match_continues() {
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-next-hand".to_owned(),
+            RuleEngineHandle::default(),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
+        );
+
+        let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+
+        state.start_round().expect("round should start successfully");
+        state.phase = GamePhase::RoundSettlement;
+        state.record_round_outcome(Some(Seat::East), true);
+
+        state.advance_after_round_settlement(1).await;
+
+        assert_eq!(state.phase, GamePhase::WaitingDiscard);
+        assert_eq!(state.hand_number, 2);
+        assert_eq!(state.dealer_seat, Seat::East);
+        assert_eq!(state.dealer_streak, 1);
+        assert_eq!(state.current_turn_seat, Seat::East);
+        assert!(state.round_runtime.is_some());
+        assert!(state
+            .player_round_state
+            .get(&Seat::East)
+            .expect("east round state should exist")
+            .drawn_tile
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn advance_after_round_settlement_finishes_match_and_broadcasts_match_settlement() {
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-match-finish".to_owned(),
+            RuleEngineHandle::default(),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
+        );
+
+        let mut east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+
+        state.start_round().expect("round should start successfully");
+        state.phase = GamePhase::RoundSettlement;
+        state.hand_number = MATCH_TOTAL_HANDS;
+        state.players_by_seat.get_mut(&Seat::South).unwrap().score = 31_000;
+        state.players_by_seat.get_mut(&Seat::East).unwrap().score = 28_000;
+        state.players_by_seat.get_mut(&Seat::West).unwrap().score = 24_000;
+        state.players_by_seat.get_mut(&Seat::North).unwrap().score = 17_000;
+        state.record_round_outcome(Some(Seat::South), false);
+
+        state
+            .advance_after_round_settlement(MATCH_TOTAL_HANDS)
+            .await;
+
+        let settlement = match recv_frame(&mut east_rx).await.payload {
+            Some(server_frame::Payload::MatchSettlement(settlement)) => settlement,
+            other => panic!("expected MatchSettlement, got {other:?}"),
+        };
+
+        assert_eq!(state.phase, GamePhase::MatchSettlement);
+        assert_eq!(settlement.match_id, "match-room-match-finish");
+        assert_eq!(settlement.standings.len(), 4);
+        assert_eq!(settlement.standings[0].user_id, "user-south");
+        assert_eq!(settlement.standings[0].rank, 1);
+        assert!(state.match_runtime.last_match_settlement.is_some());
+    }
+
+    #[tokio::test]
+    async fn resume_after_match_settlement_resends_sync_and_match_settlement() {
+        let (command_tx, _command_rx) = mpsc::channel(ROOM_COMMAND_BUFFER);
+        let mut state = RoomState::new(
+            "room-resume-finish".to_owned(),
+            RuleEngineHandle::default(),
+            deterministic_wall_factory(),
+            command_tx,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
+        );
+
+        let _east_rx = insert_test_player(&mut state, Seat::East, "user-east", "East");
+        let _south_rx = insert_test_player(&mut state, Seat::South, "user-south", "South");
+        let _west_rx = insert_test_player(&mut state, Seat::West, "user-west", "West");
+        let _north_rx = insert_test_player(&mut state, Seat::North, "user-north", "North");
+
+        state.start_round().expect("round should start successfully");
+        state.phase = GamePhase::RoundSettlement;
+        state.hand_number = MATCH_TOTAL_HANDS;
+        state.players_by_seat.get_mut(&Seat::East).unwrap().score = 32_000;
+        state.players_by_seat.get_mut(&Seat::South).unwrap().score = 26_000;
+        state.players_by_seat.get_mut(&Seat::West).unwrap().score = 24_000;
+        state.players_by_seat.get_mut(&Seat::North).unwrap().score = 18_000;
+        state.record_round_outcome(Some(Seat::East), true);
+        state
+            .advance_after_round_settlement(MATCH_TOTAL_HANDS)
+            .await;
+
+        let (resume_connection, mut resume_rx) = test_connection("conn-resume-east");
+        state.handle_resume(
+            "req-resume".to_owned(),
+            resume_connection,
+            ResumeSessionRequest {
+                room_id: "room-resume-finish".to_owned(),
+                user_id: "user-east".to_owned(),
+                resume_token: "resume-user-east".to_owned(),
+                last_received_event_seq: 0,
+            },
+        );
+
+        match recv_frame(&mut resume_rx).await.payload {
+            Some(server_frame::Payload::SyncState(sync)) => {
+                let snapshot = sync.snapshot.expect("snapshot should be present");
+                assert_eq!(snapshot.phase, GamePhase::MatchSettlement as i32);
+            }
+            other => panic!("expected SyncState on resume, got {other:?}"),
+        }
+
+        match recv_frame(&mut resume_rx).await.payload {
+            Some(server_frame::Payload::MatchSettlement(settlement)) => {
+                assert_eq!(settlement.standings[0].user_id, "user-east");
+            }
+            other => panic!("expected MatchSettlement on resume, got {other:?}"),
+        }
+    }
+
 }

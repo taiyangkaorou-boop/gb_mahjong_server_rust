@@ -12,25 +12,63 @@ impl RoomManager {
         rule_engine: RuleEngineHandle,
         match_event_writer: MatchEventWriter,
     ) -> Self {
-        Self {
-            rooms: Arc::new(RwLock::new(HashMap::new())),
+        Self::with_runtime_mode_and_wall_factory(
             rule_engine,
-            wall_factory: Arc::new(build_shuffled_wall),
+            Arc::new(build_shuffled_wall),
             match_event_writer,
-        }
+            RoomRuntimeMode::Production,
+        )
     }
 
-    #[allow(dead_code)]
-    pub fn with_rule_engine_and_wall_factory(
+    pub(crate) fn with_runtime_mode_and_wall_factory(
         rule_engine: RuleEngineHandle,
         wall_factory: WallFactory,
+        match_event_writer: MatchEventWriter,
+        runtime_mode: RoomRuntimeMode,
     ) -> Self {
         Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             rule_engine,
             wall_factory,
-            match_event_writer: MatchEventWriter::noop(),
+            match_event_writer,
+            runtime_mode,
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_rule_engine_and_wall_factory(
+        rule_engine: RuleEngineHandle,
+        wall_factory: WallFactory,
+    ) -> Self {
+        Self::with_runtime_mode_and_wall_factory(
+            rule_engine,
+            wall_factory,
+            MatchEventWriter::noop(),
+            RoomRuntimeMode::Production,
+        )
+    }
+
+    pub(crate) fn load_test(base_seed: u64) -> Self {
+        Self::load_test_with_dependencies(
+            base_seed,
+            RuleEngineHandle::noop(),
+            MatchEventWriter::noop(),
+        )
+    }
+
+    pub(crate) fn load_test_with_dependencies(
+        base_seed: u64,
+        rule_engine: RuleEngineHandle,
+        match_event_writer: MatchEventWriter,
+    ) -> Self {
+        Self::with_runtime_mode_and_wall_factory(
+            rule_engine,
+            Arc::new(move |room_config, room_id, hand_number| {
+                build_load_test_wall(room_config, room_id, hand_number, base_seed)
+            }),
+            match_event_writer,
+            RoomRuntimeMode::LoadTest,
+        )
     }
 
     pub async fn dispatch_join(
@@ -169,6 +207,21 @@ impl RoomManager {
         }
     }
 
+    pub(crate) async fn dispatch_load_test_room(
+        &self,
+        spec: LoadTestRoomSpec,
+    ) -> anyhow::Result<LoadTestRoomResult> {
+        let sender = self.get_or_create_room_sender(spec.room_id.clone()).await;
+        let (result_tx, result_rx) = oneshot::channel();
+        sender
+            .send(RoomCommand::RunLoadTestRoom { spec, result_tx })
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to enqueue load-test room command: {error}"))?;
+        result_rx
+            .await
+            .map_err(|error| anyhow::anyhow!("load-test room result channel dropped: {error}"))
+    }
+
     pub async fn dispatch_remove_player(&self, room_id: String, user_id: String) {
         // 这个入口只处理“大厅阶段的成员变更”对 room task 的同步，
         // 已开局后的真实对局不走这里踢人。
@@ -181,6 +234,8 @@ impl RoomManager {
         }
     }
 
+    // 统一处理命令投递失败后的兜底错误返回，
+    // 避免每个 dispatch_* 入口各自复制一遍 reject 逻辑。
     async fn send_command(
         &self,
         sender: mpsc::Sender<RoomCommand>,
@@ -201,11 +256,14 @@ impl RoomManager {
         }
     }
 
+    // 只读查询已存在的房间 sender，不会触发新房间创建。
     async fn get_room_sender(&self, room_id: &str) -> Option<mpsc::Sender<RoomCommand>> {
         let rooms = self.rooms.read().await;
         rooms.get(room_id).map(|handle| handle.command_tx.clone())
     }
 
+    // Join 是唯一允许隐式建房的入口。
+    // 一旦 sender 不存在，就在这里创建 room task 并注册到 rooms 表。
     async fn get_or_create_room_sender(&self, room_id: String) -> mpsc::Sender<RoomCommand> {
         if let Some(sender) = self.get_room_sender(&room_id).await {
             return sender;
@@ -224,10 +282,11 @@ impl RoomManager {
             self.wall_factory.clone(),
             command_tx.clone(),
             self.match_event_writer.clone(),
+            self.runtime_mode,
         );
 
         info!(%room_id, "spawning room task");
-        tokio::spawn(run_room_task(room_state, command_rx));
+        tokio::spawn(run_room_task(self.rooms.clone(), room_state, command_rx));
 
         rooms.insert(
             room_id,

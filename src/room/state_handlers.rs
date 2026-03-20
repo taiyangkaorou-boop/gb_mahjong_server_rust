@@ -10,6 +10,7 @@ impl RoomState {
         wall_factory: WallFactory,
         room_command_tx: mpsc::Sender<RoomCommand>,
         match_event_writer: MatchEventWriter,
+        runtime_mode: RoomRuntimeMode,
     ) -> Self {
         Self {
             rule_engine,
@@ -18,6 +19,8 @@ impl RoomState {
             wall_factory,
             room_command_tx,
             match_event_writer,
+            runtime_mode,
+            should_shutdown: false,
             room_config: RoomConfig {
                 ruleset_id: "gb_mahjong_cn_v1".to_owned(),
                 seat_count: 4,
@@ -40,6 +43,7 @@ impl RoomState {
             players_by_seat: HashMap::new(),
             player_round_state: HashMap::new(),
             round_runtime: None,
+            match_runtime: MatchRuntimeState::new(),
             user_to_seat: HashMap::new(),
             connection_to_user: HashMap::new(),
         }
@@ -72,7 +76,13 @@ impl RoomState {
                 self.handle_claim_window_timeout(action_window_id).await
             }
             RoomCommand::Disconnect { connection_id } => self.handle_disconnect(connection_id),
+            RoomCommand::AdvanceAfterRoundSettlement { settled_hand_number } => {
+                self.advance_after_round_settlement(settled_hand_number).await
+            }
             RoomCommand::RemovePlayer { user_id } => self.handle_remove_player(user_id),
+            RoomCommand::RunLoadTestRoom { spec, result_tx } => {
+                self.handle_load_test_room(spec, result_tx).await
+            }
         }
     }
 
@@ -283,6 +293,19 @@ impl RoomState {
         let event_seq = self.allocate_event_seq();
         let sync_frame = self.build_sync_state_for(seat, event_seq, SyncReason::Reconnect);
         connection.send_frame(sync_frame);
+        if self.phase == GamePhase::MatchSettlement {
+            if let Some(summary) = self.match_runtime.last_match_settlement.clone() {
+                connection.send_frame(ServerFrame {
+                    event_seq: summary.event_seq,
+                    payload: Some(server_frame::Payload::MatchSettlement(MatchSettlement {
+                        room_id: self.room_id.clone(),
+                        match_id: self.match_id.clone(),
+                        standings: summary.standings,
+                        finished_at_unix_ms: summary.finished_at_unix_ms,
+                    })),
+                });
+            }
+        }
         self.broadcast_connection_changed(seat, true);
     }
 
@@ -1303,8 +1326,9 @@ impl RoomState {
             .round_runtime
             .as_ref()
             .and_then(|runtime| runtime.active_claim_window.as_ref())
+            .cloned()
         {
-            self.persist_claim_window_opened_event(window);
+            self.persist_claim_window_opened_event(&window);
         }
         self.phase = GamePhase::WaitingClaim;
         self.send_claim_prompts(action_window_id, deadline_unix_ms, &eligible_seats);
@@ -1472,8 +1496,9 @@ impl RoomState {
             .round_runtime
             .as_ref()
             .and_then(|runtime| runtime.active_claim_window.as_ref())
+            .cloned()
         {
-            self.persist_claim_window_opened_event(window);
+            self.persist_claim_window_opened_event(&window);
         }
         self.send_claim_prompts(action_window_id, deadline_unix_ms, &eligible_seats);
         self.schedule_claim_window_timeout(action_window_id);
@@ -1653,7 +1678,7 @@ impl RoomState {
                 );
             }
             Ok(None) => {
-                self.phase = GamePhase::RoundSettlement;
+                self.settle_draw_game();
             }
             Err(error) => {
                 warn!(

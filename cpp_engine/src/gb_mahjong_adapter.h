@@ -13,6 +13,7 @@ namespace gb_mahjong::engine_server {
 class GbMahjongAdapter {
  public:
   struct ValidateOutcome {
+    // ValidateOutcome 描述的是"候选动作是否合法，以及如果合法会导出什么规则结果"。
     bool legal = false;
     gb_mahjong::engine::v1::ValidationRejectCode reject_code =
         gb_mahjong::engine::v1::VALIDATION_REJECT_CODE_UNSPECIFIED;
@@ -25,15 +26,18 @@ class GbMahjongAdapter {
   };
 
   struct ScoreOutcome {
+    // ScoreOutcome 是算番/结算层的纯计算结果，不包含房间状态推进副作用。
     uint32_t total_fan = 0;
     std::vector<gb_mahjong::engine::v1::FanDetail> fan_details;
     std::vector<gb_mahjong::engine::v1::SeatScoreDelta> score_delta_by_seat;
     std::vector<gb_mahjong::engine::v1::SettlementFlag> settlement_flags;
   };
 
+  // ValidateAction 只做无状态规则校验。
   ValidateOutcome ValidateAction(
       const gb_mahjong::engine::v1::ValidateActionRequest& request) const;
 
+  // CalculateScore 只读取终局上下文并返回番型与分数结果。
   ScoreOutcome CalculateScore(
       const gb_mahjong::engine::v1::CalculateScoreRequest& request) const;
 

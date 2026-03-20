@@ -699,6 +699,15 @@ impl RoomState {
             winning_tile,
             &calculate_response,
         );
+        self.record_round_outcome(
+            Some(winner_seat),
+            matches!(
+                win_type,
+                crate::proto::client::WinType::SelfDraw
+                    | crate::proto::client::WinType::KongDraw
+            ),
+        );
+        self.schedule_post_round_transition(self.hand_number);
 
         Ok(())
     }

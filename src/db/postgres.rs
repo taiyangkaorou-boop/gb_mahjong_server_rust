@@ -16,9 +16,9 @@ use uuid::Uuid;
 use crate::{
     auth::{AuthError, AuthRepository, AuthenticatedUser},
     db::{
-        MatchEventRecord, MatchEventRepository, MatchStatusRecord, NewMatchEventRecord,
-        RoomConfigRecord, RoomMemberRecord, RoomRecord, RoomSnapshotRecord, RoomStatusRecord,
-        UserRecord, UserSessionRecord,
+        MatchEventRecord, MatchEventRepository, MatchRecord, MatchStatusRecord,
+        NewMatchEventRecord, RoomConfigRecord, RoomMemberRecord, RoomRecord, RoomSnapshotRecord,
+        RoomStatusRecord, UserRecord, UserSessionRecord,
     },
     lobby::{
         default_lobby_room_config, to_room_view, LobbyError, LobbyJoinAccess, LobbyMember,
@@ -31,6 +31,8 @@ const LOBBY_SEAT_ORDER: [Seat; 4] = [Seat::East, Seat::South, Seat::West, Seat::
 
 #[derive(Clone, Debug)]
 pub struct DatabaseConfig {
+    // 这一层只描述运行时如何连 PostgreSQL，
+    // 不夹带任何业务配置，方便 main.rs 在启动阶段统一装配。
     pub database_url: String,
     pub max_connections: u32,
     pub connect_timeout_secs: u64,
@@ -70,12 +72,17 @@ pub async fn connect_pg_pool(config: &DatabaseConfig) -> anyhow::Result<PgPool> 
         .await
         .with_context(|| "connect to PostgreSQL")?;
 
-    info!(max_connections = config.max_connections, "postgres pool initialized");
+    info!(
+        max_connections = config.max_connections,
+        "postgres pool initialized"
+    );
     Ok(pool)
 }
 
 #[derive(Clone)]
 pub struct PostgresAuthRepository {
+    // AuthRepository 的 PostgreSQL 版本。
+    // 它把 guest 注册、session 校验和 session 轮转都落到数据库事务里。
     pool: PgPool,
 }
 
@@ -333,6 +340,8 @@ impl AuthRepository for PostgresAuthRepository {
 
 #[derive(Clone)]
 pub struct PostgresLobbyRepository {
+    // LobbyRepository 的 PostgreSQL 版本。
+    // 大厅阶段的房间、成员和房主权限都以这里的事务结果为准。
     pool: PgPool,
 }
 
@@ -349,6 +358,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         user_id: &str,
         display_name: &str,
     ) -> Result<LobbyRoomView, LobbyError> {
+        // 建房必须同时完成：用户占位检查、rooms 写入、房主成员写入。
+        // 这 3 步放在同一个事务里，避免出现只有半个大厅存在的状态。
         let mut tx = self
             .pool
             .begin()
@@ -408,8 +419,7 @@ impl LobbyRepository for PostgresLobbyRepository {
             .await
             .map_err(|error| LobbyError::Storage(error.to_string()))?;
 
-        self.joined_room_view_by_id(&room_id, display_name)
-            .await
+        self.joined_room_view_by_id(&room_id, display_name).await
     }
 
     async fn join_room(
@@ -418,6 +428,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         display_name: &str,
         room_code: &str,
     ) -> Result<LobbyRoomView, LobbyError> {
+        // 加房的关键是先锁定 rooms 行，再判断 waiting/人数/空座。
+        // 否则并发抢最后一个座位时会出现双写。
         let mut tx = self
             .pool
             .begin()
@@ -457,7 +469,10 @@ impl LobbyRepository for PostgresLobbyRepository {
             return Err(LobbyError::RoomFull);
         }
 
-        let used_seats: HashSet<Seat> = members.iter().map(|member| parse_seat(&member.seat)).collect::<Result<_, _>>()?;
+        let used_seats: HashSet<Seat> = members
+            .iter()
+            .map(|member| parse_seat(&member.seat))
+            .collect::<Result<_, _>>()?;
         let seat = LOBBY_SEAT_ORDER
             .into_iter()
             .find(|seat| !used_seats.contains(seat))
@@ -494,7 +509,11 @@ impl LobbyRepository for PostgresLobbyRepository {
         room_id: &str,
     ) -> Result<LobbyRoomView, LobbyError> {
         let snapshot = self.get_room_snapshot(room_id).await?;
-        if !snapshot.members.iter().any(|member| member.user_id == user_id) {
+        if !snapshot
+            .members
+            .iter()
+            .any(|member| member.user_id == user_id)
+        {
             return Err(LobbyError::NotRoomMember);
         }
 
@@ -506,6 +525,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         user_id: &str,
         room_id: &str,
     ) -> Result<Option<LobbyRoomView>, LobbyError> {
+        // 离房既可能只是删一个成员，也可能触发房主转移或空房解散。
+        // 因此这里统一走事务处理，避免中途状态被其他请求观察到。
         let mut tx = self
             .pool
             .begin()
@@ -516,7 +537,11 @@ impl LobbyRepository for PostgresLobbyRepository {
         if snapshot.room.status != RoomStatusRecord::Waiting {
             return Err(LobbyError::RoomAlreadyActive);
         }
-        if !snapshot.members.iter().any(|member| member.user_id == user_id) {
+        if !snapshot
+            .members
+            .iter()
+            .any(|member| member.user_id == user_id)
+        {
             return Err(LobbyError::NotRoomMember);
         }
 
@@ -628,6 +653,8 @@ impl LobbyRepository for PostgresLobbyRepository {
     }
 
     async fn disband_room(&self, owner_user_id: &str, room_id: &str) -> Result<(), LobbyError> {
+        // 解散只允许 waiting 阶段的房主执行。
+        // 对局一旦 active，权威状态就已经切到 RoomManager，不再允许大厅层直接删除。
         let mut tx = self
             .pool
             .begin()
@@ -660,6 +687,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         room_id: &str,
         user_id: &str,
     ) -> Result<LobbyJoinAccess, LobbyError> {
+        // WebSocket JoinRoom 前先走这一步，
+        // 把 session 鉴权后的 user_id 收敛成一个明确座位授权结果。
         let row = sqlx::query(
             r#"
             SELECT seat
@@ -687,6 +716,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         user_id: &str,
         ready: bool,
     ) -> Result<bool, LobbyError> {
+        // ready 更新同时承担“是否满足自动开局条件”的判断。
+        // 一旦四人齐备且全部 ready，就顺手把 rooms 锁成 active 并创建 matches 记录。
         let mut tx = self
             .pool
             .begin()
@@ -697,7 +728,11 @@ impl LobbyRepository for PostgresLobbyRepository {
         if snapshot.room.status != RoomStatusRecord::Waiting {
             return Ok(false);
         }
-        if !snapshot.members.iter().any(|member| member.user_id == user_id) {
+        if !snapshot
+            .members
+            .iter()
+            .any(|member| member.user_id == user_id)
+        {
             return Err(LobbyError::NotRoomMember);
         }
 
@@ -718,7 +753,8 @@ impl LobbyRepository for PostgresLobbyRepository {
         let members = fetch_live_room_members(&mut tx, room_id).await?;
         let config = snapshot.room.config_snapshot.clone();
         let ruleset_id = config.ruleset_id.clone();
-        let all_ready = members.len() == config.seat_count as usize && members.iter().all(|member| member.ready);
+        let all_ready = members.len() == config.seat_count as usize
+            && members.iter().all(|member| member.ready);
         if all_ready {
             let match_id = format!("match-{room_id}");
             let seating_snapshot = build_seating_snapshot(&members);
@@ -782,6 +818,8 @@ impl PostgresLobbyRepository {
         room_id: &str,
         display_name_fallback: &str,
     ) -> Result<LobbyRoomView, LobbyError> {
+        // 某些测试或历史数据可能还没有 users.display_name，
+        // 这里在返回视图前补一个兜底名字，避免大厅响应出现空字符串。
         let mut room = snapshot_to_domain(self.get_room_snapshot(room_id).await?)?;
         for member in &mut room.members {
             if member.display_name.is_empty() {
@@ -792,6 +830,8 @@ impl PostgresLobbyRepository {
     }
 
     async fn get_room_snapshot(&self, room_id: &str) -> Result<RoomSnapshotRecord, LobbyError> {
+        // 读大厅快照时保持 rooms 和 live members 两段查询分离，
+        // 便于后续单独优化成员查询或扩展房间摘要字段。
         let room = sqlx::query(
             r#"
             SELECT room_id, room_code, owner_user_id, status, config_snapshot, current_match_id,
@@ -837,6 +877,8 @@ impl PostgresLobbyRepository {
 
 #[derive(Clone)]
 pub struct PostgresMatchEventRepository {
+    // MatchEventRepository 的 PostgreSQL 版本。
+    // 它只做事件追加和按 event_seq 顺序读取，不参与房间内存状态推进。
     pool: PgPool,
 }
 
@@ -849,6 +891,8 @@ impl PostgresMatchEventRepository {
 #[async_trait]
 impl MatchEventRepository for PostgresMatchEventRepository {
     async fn append_event(&self, event: NewMatchEventRecord) -> anyhow::Result<()> {
+        // 事件写入和 matches 聚合摘要更新要么一起成功，要么一起失败。
+        // 这样 replay 事件流和 matches.last_event_seq 才不会互相打架。
         let mut tx = self.pool.begin().await.context("begin match event tx")?;
 
         sqlx::query(
@@ -874,15 +918,56 @@ impl MatchEventRepository for PostgresMatchEventRepository {
         .await
         .with_context(|| format!("insert match event {}#{}", event.match_id, event.event_seq))?;
 
-        let final_result = if event.event_type == "round_settlement" {
-            Some(event.event_payload.clone())
-        } else {
-            None
-        };
-        let match_status = if event.event_type == "round_settlement" {
+        // matches 是对事件流的聚合摘要。
+        // 只有 match_settlement 才真正结束整场；round_settlement 只代表单手牌结束。
+        let is_match_settlement = event.event_type == "match_settlement";
+        let is_round_started = event.event_type == "round_started";
+        let match_status = if is_match_settlement {
             MatchStatusRecord::Finished.as_db_str()
         } else {
             MatchStatusRecord::Active.as_db_str()
+        };
+        let current_round_id = event.round_id.clone();
+        let final_result = if is_match_settlement {
+            // match_settlement 的原始事件里，正式结果包在 final_result 下；
+            // 聚合表只保留这一层真正需要给查询接口消费的结果对象。
+            event
+                .event_payload
+                .get("final_result")
+                .cloned()
+                .or_else(|| Some(event.event_payload.clone()))
+        } else {
+            None
+        };
+        let winner_user_id = if is_match_settlement {
+            final_result
+                .as_ref()
+                .and_then(|result| result.get("standings"))
+                .and_then(Value::as_array)
+                .and_then(|standings| standings.first())
+                .and_then(|standing| standing.get("user_id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        let prevailing_wind = if is_round_started {
+            event
+                .event_payload
+                .get("prevailing_wind")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        let dealer_seat = if is_round_started {
+            event
+                .event_payload
+                .get("dealer_seat")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        } else {
+            None
         };
 
         sqlx::query(
@@ -890,15 +975,24 @@ impl MatchEventRepository for PostgresMatchEventRepository {
             UPDATE matches
             SET last_event_seq = GREATEST(last_event_seq, $2),
                 status = $3,
-                ended_at = CASE WHEN $4::jsonb IS NULL THEN ended_at ELSE now() END,
-                final_result = COALESCE($4::jsonb, final_result)
+                current_round_id = COALESCE($4, current_round_id),
+                prevailing_wind = COALESCE($5, prevailing_wind),
+                dealer_seat = COALESCE($6, dealer_seat),
+                ended_at = CASE WHEN $7 THEN now() ELSE ended_at END,
+                final_result = COALESCE($8::jsonb, final_result),
+                winner_user_id = COALESCE($9, winner_user_id)
             WHERE match_id = $1
             "#,
         )
         .bind(&event.match_id)
         .bind(event.event_seq)
         .bind(match_status)
+        .bind(current_round_id)
+        .bind(prevailing_wind)
+        .bind(dealer_seat)
+        .bind(is_match_settlement)
         .bind(final_result.map(sqlx::types::Json))
+        .bind(winner_user_id)
         .execute(&mut *tx)
         .await
         .with_context(|| format!("update match aggregate {}", event.match_id))?;
@@ -908,6 +1002,8 @@ impl MatchEventRepository for PostgresMatchEventRepository {
     }
 
     async fn list_events(&self, match_id: &str) -> anyhow::Result<Vec<MatchEventRecord>> {
+        // 回放和审计都依赖严格按 event_seq 升序读取。
+        // 仓储层把这个顺序保证死，上层就不用再重复排序。
         let rows = sqlx::query(
             r#"
             SELECT event_id, match_id, round_id, event_seq, event_type, actor_user_id, actor_seat,
@@ -925,8 +1021,32 @@ impl MatchEventRepository for PostgresMatchEventRepository {
 
         rows.into_iter().map(match_event_from_row).collect()
     }
+
+    async fn get_match(&self, match_id: &str) -> anyhow::Result<Option<MatchRecord>> {
+        let row = sqlx::query(
+            r#"
+            SELECT match_id, room_id, status, ruleset_id, config_snapshot, seating_snapshot,
+                   current_round_id, prevailing_wind, dealer_seat,
+                   CASE WHEN started_at IS NULL THEN NULL ELSE CAST(EXTRACT(EPOCH FROM started_at) * 1000 AS BIGINT) END AS started_at_unix_ms,
+                   CASE WHEN ended_at IS NULL THEN NULL ELSE CAST(EXTRACT(EPOCH FROM ended_at) * 1000 AS BIGINT) END AS ended_at_unix_ms,
+                   created_by_user_id, winner_user_id, last_event_seq, final_result,
+                   CAST(EXTRACT(EPOCH FROM created_at) * 1000 AS BIGINT) AS created_at_unix_ms,
+                   CAST(EXTRACT(EPOCH FROM updated_at) * 1000 AS BIGINT) AS updated_at_unix_ms
+            FROM matches
+            WHERE match_id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(match_id)
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("get match aggregate for {match_id}"))?;
+
+        row.map(match_record_from_row).transpose()
+    }
 }
 
+// 防止同一用户同时占多个 waiting/active 房间，是大厅层最重要的隔离约束之一。
 async fn ensure_user_not_in_active_room(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: &str,
@@ -955,6 +1075,8 @@ async fn ensure_user_not_in_active_room(
     Ok(())
 }
 
+// 邀请码不是主键，但需要在当前库内唯一。
+// 这里循环生成直到命中一个未被使用的 room_code。
 async fn next_available_room_code(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> Result<String, LobbyError> {
@@ -967,11 +1089,12 @@ async fn next_available_room_code(
             .collect::<String>()
             .to_ascii_uppercase();
 
-        let exists = sqlx::query_scalar::<_, i64>("SELECT 1 FROM rooms WHERE room_code = $1 LIMIT 1")
-            .bind(&candidate)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|error| LobbyError::Storage(error.to_string()))?;
+        let exists =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM rooms WHERE room_code = $1 LIMIT 1")
+                .bind(&candidate)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|error| LobbyError::Storage(error.to_string()))?;
 
         if exists.is_none() {
             return Ok(candidate);
@@ -979,6 +1102,7 @@ async fn next_available_room_code(
     }
 }
 
+// FOR UPDATE 版本的房间快照，用于需要修改大厅状态的事务路径。
 async fn fetch_room_snapshot_for_update(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &str,
@@ -1006,6 +1130,7 @@ async fn fetch_room_snapshot_for_update(
     })
 }
 
+// 只读取当前仍有效的成员，已经 left/kicked 的历史轨迹不混进大厅现状。
 async fn fetch_live_room_members(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &str,
@@ -1033,6 +1158,7 @@ async fn fetch_live_room_members(
     .collect()
 }
 
+// 把 SQL 行映射回强类型记录，避免业务层散落 row.get(...)。
 fn room_record_from_row(row: PgRow) -> Result<RoomRecord, LobbyError> {
     Ok(RoomRecord {
         room_id: row.get("room_id"),
@@ -1049,6 +1175,7 @@ fn room_record_from_row(row: PgRow) -> Result<RoomRecord, LobbyError> {
     })
 }
 
+// RoomMember 同理，统一在这里做时间戳和 seat 字段的行级转换。
 fn room_member_from_row(row: PgRow) -> Result<RoomMemberRecord, LobbyError> {
     Ok(RoomMemberRecord {
         room_id: row.get("room_id"),
@@ -1057,11 +1184,49 @@ fn room_member_from_row(row: PgRow) -> Result<RoomMemberRecord, LobbyError> {
         seat: row.get("seat"),
         joined_at_unix_ms: row.get::<i64, _>("joined_at_unix_ms") as u64,
         ready: row.get("ready"),
-        kicked_at_unix_ms: row.try_get::<Option<i64>, _>("kicked_at_unix_ms").unwrap_or(None).map(|value| value as u64),
-        left_at_unix_ms: row.try_get::<Option<i64>, _>("left_at_unix_ms").unwrap_or(None).map(|value| value as u64),
+        kicked_at_unix_ms: row
+            .try_get::<Option<i64>, _>("kicked_at_unix_ms")
+            .unwrap_or(None)
+            .map(|value| value as u64),
+        left_at_unix_ms: row
+            .try_get::<Option<i64>, _>("left_at_unix_ms")
+            .unwrap_or(None)
+            .map(|value| value as u64),
     })
 }
 
+// MatchRecord 是 replay/API 的聚合摘要读模型。
+// 这里把 SQL 行统一还原成强类型结构，避免 HTTP 层直接操作 row.get(... )。
+fn match_record_from_row(row: PgRow) -> anyhow::Result<MatchRecord> {
+    Ok(MatchRecord {
+        match_id: row.get("match_id"),
+        room_id: row.get("room_id"),
+        status: MatchStatusRecord::from_db_str(row.get::<&str, _>("status"))
+            .context("invalid match status in database")?,
+        ruleset_id: row.get("ruleset_id"),
+        config_snapshot: row.get::<sqlx::types::Json<Value>, _>("config_snapshot").0,
+        seating_snapshot: row.get::<sqlx::types::Json<Value>, _>("seating_snapshot").0,
+        current_round_id: row.get("current_round_id"),
+        prevailing_wind: row.get("prevailing_wind"),
+        dealer_seat: row.get("dealer_seat"),
+        started_at_unix_ms: row
+            .try_get::<Option<i64>, _>("started_at_unix_ms")?
+            .map(|value| value as u64),
+        ended_at_unix_ms: row
+            .try_get::<Option<i64>, _>("ended_at_unix_ms")?
+            .map(|value| value as u64),
+        created_by_user_id: row.get("created_by_user_id"),
+        winner_user_id: row.get("winner_user_id"),
+        last_event_seq: row.get("last_event_seq"),
+        final_result: row
+            .try_get::<Option<sqlx::types::Json<Value>>, _>("final_result")?
+            .map(|value| value.0),
+        created_at_unix_ms: row.get::<i64, _>("created_at_unix_ms") as u64,
+        updated_at_unix_ms: row.get::<i64, _>("updated_at_unix_ms") as u64,
+    })
+}
+
+// 事件流读取时保留 event_payload 原始 JSON，方便后续 replay 层自己解释。
 fn match_event_from_row(row: PgRow) -> anyhow::Result<MatchEventRecord> {
     Ok(MatchEventRecord {
         event_id: row.get("event_id"),
@@ -1079,6 +1244,7 @@ fn match_event_from_row(row: PgRow) -> anyhow::Result<MatchEventRecord> {
     })
 }
 
+// 大厅领域对象转成数据库快照结构。
 fn room_config_to_record(config: &LobbyRoomConfig) -> RoomConfigRecord {
     RoomConfigRecord {
         ruleset_id: config.ruleset_id.clone(),
@@ -1091,6 +1257,7 @@ fn room_config_to_record(config: &LobbyRoomConfig) -> RoomConfigRecord {
     }
 }
 
+// 数据库快照结构转回大厅领域对象。
 fn json_room_config_to_domain(config: RoomConfigRecord) -> LobbyRoomConfig {
     LobbyRoomConfig {
         ruleset_id: config.ruleset_id,
@@ -1103,6 +1270,7 @@ fn json_room_config_to_domain(config: RoomConfigRecord) -> LobbyRoomConfig {
     }
 }
 
+// 从数据库快照重建大厅领域对象，供服务层统一复用。
 fn snapshot_to_domain(snapshot: RoomSnapshotRecord) -> Result<LobbyRoom, LobbyError> {
     Ok(LobbyRoom {
         room_id: snapshot.room.room_id,
@@ -1134,6 +1302,7 @@ fn snapshot_to_domain(snapshot: RoomSnapshotRecord) -> Result<LobbyRoom, LobbyEr
     })
 }
 
+// seating_snapshot 会固化到 matches，记录开局瞬间的座位归属和初始分数。
 fn build_seating_snapshot(members: &[RoomMemberRecord]) -> Value {
     let mut seating = serde_json::Map::new();
     for member in members {
@@ -1149,15 +1318,19 @@ fn build_seating_snapshot(members: &[RoomMemberRecord]) -> Value {
     Value::Object(seating)
 }
 
+// PostgreSQL 字符串状态转回大厅领域状态。
 fn parse_room_status(value: &str) -> Result<LobbyRoomStatus, LobbyError> {
     match value {
         "waiting" => Ok(LobbyRoomStatus::Waiting),
         "active" => Ok(LobbyRoomStatus::Active),
         "closed" => Ok(LobbyRoomStatus::Closed),
-        _ => Err(LobbyError::Storage("invalid room status in database".to_owned())),
+        _ => Err(LobbyError::Storage(
+            "invalid room status in database".to_owned(),
+        )),
     }
 }
 
+// 座位枚举在 DB 里先按 proto 名称存字符串，读取时统一从这里反解。
 fn parse_seat(value: &str) -> Result<Seat, LobbyError> {
     match value {
         "SEAT_EAST" => Ok(Seat::East),
@@ -1168,6 +1341,7 @@ fn parse_seat(value: &str) -> Result<Seat, LobbyError> {
     }
 }
 
+// 仓储层统一使用毫秒时间戳，便于和协议层、测试数据保持一致。
 fn unix_time_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

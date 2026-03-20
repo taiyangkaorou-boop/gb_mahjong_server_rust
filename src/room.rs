@@ -4,8 +4,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use serde::Serialize;
 use tokio::{
-    sync::{mpsc, RwLock},
+    sync::{mpsc, oneshot, RwLock},
     time::{sleep, Duration},
 };
 use tracing::{debug, info, warn};
@@ -16,12 +17,13 @@ use crate::{
     proto::{
         client::{
             player_action_request, server_frame, ActionBroadcast, ActionDetail, ActionPrompt,
-            ActionRejected, ClaimWindow, DiscardAdded, DrawDetail, FanDetail, GamePhase,
-            GameSnapshot, JoinRoomRequest, JoinRoomResponse, Meld, MeldAdded, PlayerActionRequest,
-            PlayerConnectionChanged, PlayerState, PlayerStatus, PromptOption, ReadyRequest,
-            RejectCode, ResolvedClaim, ResultingEffect, ResumeSessionRequest, RevealedHand,
-            RoomConfig, RoundPlayerResult, RoundSettlement, Seat, SelfHandState, ServerFrame,
-            SyncReason, SyncState, Tile, TurnAdvanced,
+            ActionRejected, ClaimWindow, DiscardAdded, DrawDetail, FanDetail, FinalStanding,
+            GamePhase, GameSnapshot, JoinRoomRequest, JoinRoomResponse, MatchSettlement, Meld,
+            MeldAdded, PlayerActionRequest, PlayerConnectionChanged, PlayerState, PlayerStatus,
+            PromptOption, ReadyRequest, RejectCode, ResolvedClaim, ResultingEffect,
+            ResumeSessionRequest, RevealedHand, RoomConfig, RoundPlayerResult, RoundSettlement,
+            Seat, SelfHandState, ServerFrame, SettlementFlag, SyncReason, SyncState, Tile,
+            TurnAdvanced,
         },
         engine::{self as engine_proto, candidate_action},
     },
@@ -31,12 +33,61 @@ const ROOM_COMMAND_BUFFER: usize = 256;
 const RECONNECT_GRACE_MS: u64 = 30_000;
 const INITIAL_SCORE: i64 = 25_000;
 const DEAD_WALL_TILE_COUNT: usize = 14;
+const MATCH_TOTAL_HANDS: u32 = 4;
 const SEAT_ORDER: [Seat; 4] = [Seat::East, Seat::South, Seat::West, Seat::North];
 
 // 牌墙生成器允许测试注入固定顺序，便于稳定复现摸牌和抢操作场景。
 type WallFactory = Arc<dyn Fn(&RoomConfig, &str, u32) -> Vec<Tile> + Send + Sync>;
 
 pub type ConnectionSender = mpsc::UnboundedSender<ServerFrame>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomRuntimeMode {
+    // Production 模式走完整的规则校验、广播和事件持久化路径。
+    Production,
+    // LoadTest 模式只保留房间状态机本体，用于进程内压测。
+    LoadTest,
+}
+
+impl RoomRuntimeMode {
+    fn emits_network_frames(self) -> bool {
+        matches!(self, Self::Production)
+    }
+
+    fn persists_events(self) -> bool {
+        matches!(self, Self::Production)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoadTestWinnerPolicy {
+    Random,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LoadTestRoomSpec {
+    // 压测房间需要带上稳定标识，便于汇总结果和按 seed 复现问题。
+    pub(crate) room_id: String,
+    pub(crate) room_index: u64,
+    pub(crate) player_base_index: u64,
+    // 每手牌最多随机执行多少次出牌，超出后强制随机指定赢家收口。
+    pub(crate) max_actions: u32,
+    // 当前压测房间要完整跑多少手。东风场默认就是 4 手。
+    pub(crate) hands_per_match: u32,
+    pub(crate) seed: u64,
+    pub(crate) winner_policy: LoadTestWinnerPolicy,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LoadTestRoomResult {
+    pub room_id: String,
+    pub room_index: u64,
+    pub success: bool,
+    pub actions_executed: u32,
+    pub hands_completed: u32,
+    pub winner_seat: Option<String>,
+    pub failure_reason: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct AuthorizedJoin {
@@ -84,6 +135,7 @@ pub struct RoomManager {
     rule_engine: RuleEngineHandle,
     wall_factory: WallFactory,
     match_event_writer: MatchEventWriter,
+    runtime_mode: RoomRuntimeMode,
 }
 
 impl Default for RoomManager {
@@ -126,9 +178,17 @@ enum RoomCommand {
     Disconnect {
         connection_id: String,
     },
+    AdvanceAfterRoundSettlement {
+        // 结算后延迟推进下一手，避免客户端还没消费 RoundSettlement 就立刻被下一手 Sync 覆盖。
+        settled_hand_number: u32,
+    },
     RemovePlayer {
         // 供 HTTP 大厅的 leave/kick/disband 流程在 waiting 阶段回收玩家占位。
         user_id: String,
+    },
+    RunLoadTestRoom {
+        spec: LoadTestRoomSpec,
+        result_tx: oneshot::Sender<LoadTestRoomResult>,
     },
 }
 
@@ -190,21 +250,65 @@ struct DrawOutcome {
     replacement_draw: bool,
 }
 
+#[derive(Clone, Default)]
+struct MatchPlayerStats {
+    // 整场统计只保留排行榜和结算需要的数据，
+    // 不在 match 级状态里重复存每手细节。
+    rounds_won: u32,
+    self_draw_wins: u32,
+}
+
+struct MatchRuntimeState {
+    // 当前先实现简化东风场，共 4 手。
+    total_hands: u32,
+    completed_hands: u32,
+    player_stats: HashMap<Seat, MatchPlayerStats>,
+    last_round_winner: Option<Seat>,
+    last_round_self_draw: bool,
+    last_match_settlement: Option<MatchSettlementSummary>,
+}
+
+struct RoundTransition {
+    // RoundTransition 只表达“结算之后该怎么走”，
+    // 让单手牌结算逻辑和整场编排逻辑保持解耦。
+    next_prevailing_wind: Seat,
+    next_dealer_seat: Seat,
+    next_hand_number: u32,
+    next_dealer_streak: u32,
+    match_finished: bool,
+}
+
+#[derive(Clone)]
+struct MatchSettlementSummary {
+    // 整场已经结束时，重连玩家仍然需要拿到最终排名。
+    event_seq: u64,
+    standings: Vec<FinalStanding>,
+    finished_at_unix_ms: u64,
+}
+
 #[derive(Clone, Copy)]
 enum DrawSource {
     LiveWall,
     DeadWall,
 }
 
-async fn run_room_task(mut room_state: RoomState, mut command_rx: mpsc::Receiver<RoomCommand>) {
+async fn run_room_task(
+    rooms: Arc<RwLock<HashMap<String, RoomHandle>>>,
+    mut room_state: RoomState,
+    mut command_rx: mpsc::Receiver<RoomCommand>,
+) {
     info!(room_id = %room_state.room_id, "room task started");
 
     // 同一个房间的所有 Join/Ready/Action 都在这里按顺序串行处理，
     // 这是整个项目避免 Arc<RwLock<RoomState>> 并发竞态的核心。
     while let Some(command) = command_rx.recv().await {
         room_state.handle_command(command).await;
+        if room_state.should_shutdown {
+            break;
+        }
     }
 
+    rooms.write().await.remove(&room_state.room_id);
     info!(room_id = %room_state.room_id, "room task stopped");
 }
 
@@ -217,6 +321,8 @@ struct RoomState {
     wall_factory: WallFactory,
     room_command_tx: mpsc::Sender<RoomCommand>,
     match_event_writer: MatchEventWriter,
+    runtime_mode: RoomRuntimeMode,
+    should_shutdown: bool,
     phase: GamePhase,
     prevailing_wind: Seat,
     dealer_seat: Seat,
@@ -230,6 +336,7 @@ struct RoomState {
     players_by_seat: HashMap<Seat, PlayerSlot>,
     player_round_state: HashMap<Seat, PlayerRoundState>,
     round_runtime: Option<RoundRuntimeState>,
+    match_runtime: MatchRuntimeState,
     user_to_seat: HashMap<String, Seat>,
     connection_to_user: HashMap<String, String>,
 }
@@ -270,6 +377,8 @@ include!("room/manager.rs");
 include!("room/state_handlers.rs");
 include!("room/state_engine.rs");
 include!("room/state_broadcast.rs");
+include!("room/state_match.rs");
+include!("room/state_load_test.rs");
 
 // 纯辅助函数单独放在这里，避免把结构体方法区继续拉长。
 include!("room/helpers.rs");
